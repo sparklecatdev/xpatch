@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.xpatch/
+*.apk
+*.apkm
+*.apks
+*.xapk
+*.keystore
+*.jks
+*.jar
+*.mpp
+dist/
+build/
+*.egg-info/

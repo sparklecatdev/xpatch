@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xpatch-local"
+version = "0.1.0"
+description = "Local Twitter Android patch manager with saved profiles and an update inbox"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+xpatch = "xpatch.__main__:main"
+
+[tool.setuptools.package-data]
+xpatch = ["static/*"]
+
+[tool.setuptools.packages.find]
+include = ["xpatch*"]
