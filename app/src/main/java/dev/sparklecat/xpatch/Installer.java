@@ -11,9 +11,13 @@ final class Installer {
     static void install(Context context) throws Exception {
         List<File> parts = Pipeline.outputParts(context);
         if (parts.isEmpty()) throw new IOException("Build a patched APK first.");
+        install(context, parts, "com.twitter.android");
+    }
+    static void install(Context context, List<File> parts, String packageName) throws Exception {
+        if (parts.isEmpty()) throw new IOException("No APK is available.");
         PackageInstaller installer = context.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-        params.setAppPackageName("com.twitter.android");
+        params.setAppPackageName(packageName);
         if (Build.VERSION.SDK_INT >= 31) params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED);
         int id = installer.createSession(params); boolean committed = false;
         try (PackageInstaller.Session session = installer.openSession(id)) {

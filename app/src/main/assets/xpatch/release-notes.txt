@@ -1,0 +1,11 @@
+XPatch 0.3.0-alpha.1
+
+New X model filtering covers nested timeline modules, conversation IDs, promoted trends and events, RTB image ads and matched video pre-roll metadata. Signed-in coverage still needs verification.
+
+Customize supported Compose navigation tabs and their order, hide the home tabs and Spaces bar, filter suggestions, and mute phrases inside X. Native bar sizing, colors, ordering and the inspector remain available.
+
+Media capture now includes modern model constructors. Save original-size photos and the highest-bitrate MP4 supplied by X from the live Save menu.
+
+Verified patcher updates, stable/preview channels, optional startup and return checks, automatic verified downloads with Install/Later, in-X update notices, release notes, saved-APK rebuilds, profile backup and redacted diagnostics are now available. Patch-engine updates ship with XPatch; rebuild the saved stock APK to apply them to X.
+
+Builds publish as a complete generation. A failed build keeps the previous installable output.

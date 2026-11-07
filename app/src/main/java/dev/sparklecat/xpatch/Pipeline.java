@@ -10,6 +10,7 @@ import java.util.*;
 import java.util.zip.ZipFile;
 
 final class Pipeline {
+    static final int ENGINE = 4;
     static final Object LOCK = new Object();
     static final class Input implements AutoCloseable {
         final DexEngine.Plan plan;
@@ -41,34 +42,45 @@ final class Pipeline {
             return new Input(DexEngine.analyze(base, app), info.versionName, ApkPatcher.sha256(source), parts, directory);
         } catch (Exception e) { ApkSet.delete(directory); throw e; }
     }
+    private static File outputDirectory(Context context) {
+        String name = context.getSharedPreferences("xpatch", 0).getString("output", "");
+        return name.matches("build-[a-f0-9-]{36}") ? new File(context.getFilesDir(), name) : context.getFilesDir();
+    }
+    static File report(Context context) { return new File(outputDirectory(context), "report.txt"); }
     static File output(Context context) {
-        File set = new File(context.getFilesDir(), "patched.apks");
-        return set.isFile() ? set : new File(context.getFilesDir(), "patched.apk");
+        File directory = outputDirectory(context), set = new File(directory, "patched.apks");
+        return set.isFile() ? set : new File(directory, "patched.apk");
     }
     static List<File> outputParts(Context context) {
         if (!output(context).getName().endsWith(".apks")) return Collections.singletonList(output(context));
-        File[] parts = new File(context.getFilesDir(), "patched-splits").listFiles((dir, name) -> name.endsWith(".apk"));
+        File[] parts = new File(outputDirectory(context), "patched-splits").listFiles((dir, name) -> name.endsWith(".apk"));
         if (parts == null) return Collections.emptyList();
         Arrays.sort(parts, Comparator.comparing(File::getName)); return Arrays.asList(parts);
     }
     static String build(Context context, File source, Input input, JSONObject profile, ApkPatcher.Progress progress) throws Exception {
         Profile.validate(profile);
         if (profile.optBoolean("ads") && !input.plan.adsAvailable()) throw new IOException("Ad hook not found or model ambiguous. Disable ad removal to build UI mods, or provide this APK's compatibility report for a new matcher.");
+        if (profile.optBoolean("premium") && input.plan.premiumSites == 0) throw new IOException("Premium display hook not found in this APK.");
+        if (profile.optBoolean("downloads", true) && input.plan.mediaHooks.isEmpty() && input.plan.modern.mediaConstructors.isEmpty()) throw new IOException("Media decoder hook not found in this APK.");
+        if ((!profile.optString("navHidden").isEmpty() || !profile.optString("navOrder").isEmpty()) && input.plan.modern.navigation.isEmpty()) throw new IOException("Navigation hook not found in this APK.");
+        if (profile.optBoolean("hideSpaces") && !input.plan.modern.hidden.containsValue("hideSpaces")) throw new IOException("Spaces bar hook not found in this APK.");
         if (!input.sha.equals(ApkPatcher.sha256(source))) throw new IOException("Input changed. Analyze it again.");
         for (ApkSet.Part part : input.parts) if (!part.sha.equals(ApkPatcher.sha256(part.file))) throw new IOException("An input split changed. Analyze it again.");
         File work = new File(context.getCacheDir(), "patch-work"); ApkSet.delete(work);
         if (!work.mkdirs()) throw new IOException("Could not create work folder.");
-        new File(context.getFilesDir(), "patched.apk").delete(); new File(context.getFilesDir(), "patched.apks").delete();
-        File splits = new File(context.getFilesDir(), "patched-splits"); ApkSet.delete(splits);
+        File previous = outputDirectory(context);
+        File generation = new File(context.getFilesDir(), "build-" + UUID.randomUUID());
+        if (!generation.mkdir()) throw new IOException("Could not prepare output generation.");
+        File splits = new File(generation, "patched-splits");
         File runtime = new File(work, "runtime.dex");
-        try (InputStream in = context.getAssets().open("runtime.dex"); OutputStream out = new FileOutputStream(runtime)) { ApkPatcher.copy(in, out, 8 * 1024 * 1024); }
-        JSONObject manifest = new JSONObject().put("schema", 1).put("engine", 3).put("inputVersion", input.version).put("inputSha256", input.sha).put("entryFields", new JSONObject(input.plan.entryFields)).put("promotedFields", new JSONObject(input.plan.promotedFields)).put("mediaFields", new JSONObject(input.plan.mediaFields)).put("premiumSites", input.plan.premiumSites).put("profile", profile);
-        Map<String, byte[]> notices = new LinkedHashMap<>();
-        for (String name : new String[]{"NOTICE", "Piko-LICENSE.txt"}) {
-            try (InputStream in = context.getAssets().open("xpatch/" + name); ByteArrayOutputStream out = new ByteArrayOutputStream()) { ApkPatcher.copy(in, out, 128 * 1024); notices.put(name, out.toByteArray()); }
-        }
         boolean complete = false;
         try {
+        try (InputStream in = context.getAssets().open("runtime.dex"); OutputStream out = new FileOutputStream(runtime)) { ApkPatcher.copy(in, out, 8 * 1024 * 1024); }
+        JSONObject manifest = new JSONObject().put("schema", 1).put("engine", ENGINE).put("patchVersion", BuildConfig.VERSION_NAME).put("inputVersion", input.version).put("inputSha256", input.sha).put("entryFields", new JSONObject(input.plan.entryFields)).put("promotedFields", new JSONObject(input.plan.promotedFields)).put("mediaFields", new JSONObject(input.plan.mediaFields)).put("premiumSites", input.plan.premiumSites).put("modernModels", new JSONObject(input.plan.modern.models)).put("immutableConverter", input.plan.modern.converter).put("modernTimeline", !input.plan.modern.lists.isEmpty()).put("navigation", !input.plan.modern.navigation.isEmpty()).put("composeTabs", input.plan.modern.hidden.containsValue("hideTabs")).put("spaces", input.plan.modern.hidden.containsValue("hideSpaces")).put("profile", profile);
+        Map<String, byte[]> notices = new LinkedHashMap<>();
+        for (String name : new String[]{"NOTICE", "Piko-LICENSE.txt", "release-notes.txt"}) {
+            try (InputStream in = context.getAssets().open("xpatch/" + name); ByteArrayOutputStream out = new ByteArrayOutputStream()) { ApkPatcher.copy(in, out, 128 * 1024); notices.put(name, out.toByteArray()); }
+        }
             ApkSigner.SignerConfig signer = SigningIdentity.load();
             if (!splits.mkdir()) throw new IOException("Could not prepare output folder.");
             List<File> outputs = new ArrayList<>();
@@ -80,17 +92,20 @@ final class Pipeline {
             }
             File output;
             if (outputs.size() == 1) {
-                output = new File(context.getFilesDir(), "patched.apk");
+                output = new File(generation, "patched.apk");
                 if (!outputs.get(0).renameTo(output)) throw new IOException("Could not publish output.");
                 ApkSet.delete(splits);
-            } else { output = new File(context.getFilesDir(), "patched.apks"); ApkSet.archive(outputs, output); }
-            String report = "XPatch 0.2.0-alpha.2\nX version: " + input.version + "\nInput SHA-256: " + input.sha + "\nAPK count: " + input.parts.size() + "\n" + input.plan.summary() + "\nOutput SHA-256: " + ApkPatcher.sha256(output) + "\n\nBytecode matched; signed-in X behavior still needs device verification.\n";
-            try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(context.getFilesDir(), "report.txt")), StandardCharsets.UTF_8)) { out.write(report); }
-            context.getSharedPreferences("xpatch", 0).edit().putString("status", report).apply();
-            complete = true; return report;
+            } else { output = new File(generation, "patched.apks"); ApkSet.archive(outputs, output); }
+            String report = "XPatch " + BuildConfig.VERSION_NAME + "\nX version: " + input.version + "\nInput SHA-256: " + input.sha + "\nAPK count: " + input.parts.size() + "\n" + input.plan.summary() + "\nOutput SHA-256: " + ApkPatcher.sha256(output) + "\n\nBytecode matched; signed-in X behavior still needs device verification.\n";
+            try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(generation, "report.txt")), StandardCharsets.UTF_8)) { out.write(report); }
+            if (!context.getSharedPreferences("xpatch", 0).edit().putString("output", generation.getName()).putString("status", report).commit()) throw new IOException("Could not publish output. Previous build is preserved.");
+            complete = true;
+            if (!previous.equals(context.getFilesDir())) ApkSet.delete(previous);
+            else { new File(previous, "patched.apk").delete(); new File(previous, "patched.apks").delete(); ApkSet.delete(new File(previous, "patched-splits")); }
+            return report;
         } finally {
             ApkSet.delete(work);
-            if (!complete) { new File(context.getFilesDir(), "patched.apk").delete(); new File(context.getFilesDir(), "patched.apks").delete(); ApkSet.delete(splits); }
+            if (!complete) ApkSet.delete(generation);
         }
     }
     static JSONObject profile(Context context) throws JSONException {

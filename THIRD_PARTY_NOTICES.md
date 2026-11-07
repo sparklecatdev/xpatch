@@ -6,6 +6,8 @@ Source: https://github.com/sparklecatdev/plural-star-mods/tree/563fd29980ac1ae0a
 
 Copyright the plural-star-mods contributors. Licensed under AGPL-3.0; see [LICENSE](LICENSE). `ApkPatcher.java` and `SigningIdentity.java` adapt the project's Android ZIP alignment and signing approach. The cat SVG and README presentation are derived from the same repository. Adaptations add structural DEX rewriting, split APK handling, validation and a separate signing alias.
 
+`UpdateClient`, `UpdateTrust`, the shared release policy/feed/version helpers, `UpdateNotices` and the update/diagnostics UI adapt its public release selection, verified-download flow, release notes, startup notices and retained-source rebuild approach. XPatch uses its own repository, signing identity, bounded inputs and local profile backup; no Plural account service is included.
+
 ## Piko
 
 Source: https://github.com/crimera/piko/tree/a0ed9a5ae782fe66e02294e5a49d235e2f139b24
@@ -13,6 +15,8 @@ Source: https://github.com/crimera/piko/tree/a0ed9a5ae782fe66e02294e5a49d235e2f1
 Copyright (C) 2026 piko. Licensed under GPL-3.0, with the attribution requirement preserved verbatim in [third_party/piko/NOTICE](third_party/piko/NOTICE). The original license is [third_party/piko/Piko-LICENSE.txt](third_party/piko/Piko-LICENSE.txt).
 
 `runtime/MediaCatalog.java` adapts media traversal and original-image handling from `extensions/twitter/src/main/java/app/morphe/extension/twitter/entity/ExtMediaEntities.java`. It adds discovered field mappings, URL validation, explicit highest-bitrate selection, format preservation and bounded in-memory storage. `Mods.flag` uses feature-switch names from `extensions/twitter/src/main/java/app/morphe/extension/twitter/patches/FeatureSwitchPatch.java`; the hook matching and local display-state patch are maintained here.
+
+The current-X filtering and navigation references also use Piko's current-X implementation at commit `86fb221bf9d901cf8d3f8d3dcd94fa498a9966fb`: https://github.com/crimera/piko/tree/86fb221bf9d901cf8d3f8d3dcd94fa498a9966fb . `ModernHooks` and `ContentFilter` adapt its new-X model categories, nested module filtering, promoted trend/event and RTB handling, conversation ID repair and navigation approach. XPatch discovers renamed fields and injects its own dependency-free hooks. The same GPL-3.0 license and NOTICE apply.
 
 Piko's NOTICE and license are packaged in `assets/xpatch/` in XPatch and copied into every patched base APK. Source remains available in this repository. No upstream patch bundle is embedded.
 

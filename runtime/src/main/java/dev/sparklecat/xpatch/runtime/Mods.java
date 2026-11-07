@@ -11,9 +11,7 @@ import android.widget.*;
 import org.json.*;
 import java.io.*;
 import java.lang.ref.WeakReference;
-import java.lang.reflect.Field;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Injected runtime; only uses Android APIs and schema information discovered in this APK. */
 public final class Mods implements Application.ActivityLifecycleCallbacks {
@@ -22,12 +20,13 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
     private static volatile JSONObject config;
     private static JSONObject schema;
     private static MediaCatalog media;
+    private static ContentFilter content;
     private static SharedPreferences preferences;
-    private static final Map<String, Field> entryFields = new ConcurrentHashMap<>();
     private final Map<Activity, ViewTreeObserver.OnGlobalLayoutListener> listeners = new WeakHashMap<>();
     private final Map<View, Original> originals = new WeakHashMap<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<Activity, Runnable> pending = new WeakHashMap<>();
+    private final UpdateNotices updates = new UpdateNotices();
 
     public static synchronized void install(Application application) {
         if (config != null) return;
@@ -39,6 +38,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
             }
             schema = new JSONObject(bytes.toString("UTF-8"));
             media = new MediaCatalog(schema.optJSONObject("mediaFields") == null ? new JSONObject() : schema.getJSONObject("mediaFields"));
+            content = new ContentFilter(schema);
             preferences = application.getSharedPreferences("xpatch.mods.v1", Context.MODE_PRIVATE);
             JSONObject initial = schema.getJSONObject("profile");
             try { config = new JSONObject(preferences.getString("profile", initial.toString())); }
@@ -52,37 +52,14 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         JSONObject options = config;
         if (entry == null || options == null) return entry;
         if (options.optBoolean("downloads", true) && media != null) media.capture(entry);
-        if (!options.optBoolean("ads", false)) return entry;
-        if (entry instanceof List<?>) {
-            List<?> list = (List<?>) entry;
-            ArrayList<Object> kept = null;
-            for (int i = 0; i < list.size(); i++) {
-                Object item = list.get(i);
-                boolean remove = item != null && filter(item) == null;
-                if (remove && kept == null) kept = new ArrayList<>(list.subList(0, i));
-                if (!remove && kept != null) kept.add(item);
-            }
-            return kept == null ? entry : kept;
-        }
-        try {
-            Class<?> type = entry.getClass();
-            String promoted = schema.optJSONObject("promotedFields") == null ? "" : schema.getJSONObject("promotedFields").optString(type.getName(), "");
-            if (!promoted.isEmpty()) {
-                Field marker = type.getDeclaredField(promoted); marker.setAccessible(true);
-                if (marker.get(entry) != null) return null;
-            }
-            String name = schema.getJSONObject("entryFields").optString(type.getName(), "");
-            if (name.isEmpty()) return entry;
-            Field field = entryFields.get(type.getName());
-            if (field == null) { field = type.getDeclaredField(name); field.setAccessible(true); entryFields.put(type.getName(), field); }
-            Object value = field.get(entry);
-            if (value instanceof String) {
-                String id = ((String) value).toLowerCase(Locale.ROOT);
-                if (id.startsWith("promoted-") || id.startsWith("promoted_") || id.startsWith("promotedtweet-") || id.startsWith("rtb-")) return null;
-            }
-        } catch (Exception ignored) { }
-        return entry;
+        return content == null ? entry : content.filter(entry, options);
     }
+    public static void capture(Object value) { if (media != null && config != null && config.optBoolean("downloads")) media.capture(value); }
+    public static Object adMetadata(Object original) { return config != null && config.optBoolean("ads") ? null : original; }
+    public static Object timeline(Object value) { return config == null || content == null ? value : content.timeline(value, config); }
+    public static Map<?, ?> navigation(Map<?, ?> original) { return config == null ? original : ContentFilter.navigation(original, config); }
+    public static boolean hideTabs() { JSONObject bar = config == null ? null : config.optJSONObject("tabs"); return bar != null && bar.optBoolean("hide"); }
+    public static boolean hideSpaces() { return config != null && config.optBoolean("hideSpaces"); }
     public static boolean premium(boolean original) { return config != null && config.optBoolean("premium") || original; }
     // Feature-switch names adapted from Piko FeatureSwitchPatch (GPLv3; see NOTICE).
     public static boolean flag(boolean original, String key) {
@@ -218,10 +195,10 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
     }
     private void menu(Activity activity) {
         List<String> items = new ArrayList<>();
-        items.add("Promoted posts: " + (config.optBoolean("ads") ? "hidden" : "shown"));
+        items.add("Ad filtering: " + (config.optBoolean("ads") ? "hidden" : "shown"));
         for (String key : BARS) items.add(config.optJSONObject(key).optString("label", key));
         items.add("Inspect this screen"); items.add("Premium cosmetics: " + (config.optBoolean("premium") ? "on" : "off"));
-        items.add("Media downloads: " + (config.optBoolean("downloads", true) ? "on" : "off")); items.add("About XPatch"); items.add("Reset mods");
+        items.add("Media downloads: " + (config.optBoolean("downloads", true) ? "on" : "off")); items.add("About XPatch"); items.add("Reset mods"); items.add("Timeline filters and navigation"); items.add("Updates and release notes");
         new AlertDialog.Builder(activity).setTitle("XPatch mods").setItems(items.toArray(new String[0]), (dialog, which) -> {
             try {
                 JSONObject next = new JSONObject(config.toString());
@@ -233,12 +210,39 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
                 else if (which == BARS.length + 2) {
                     if (schema.optInt("premiumSites") == 0) { Toast.makeText(activity, "No compatible Premium UI hook in this APK", Toast.LENGTH_LONG).show(); return; }
                     next.put("premium", !next.optBoolean("premium")); save(activity, next);
-                    new AlertDialog.Builder(activity).setTitle("Client-side Premium").setMessage("Enables local Premium display settings and custom-navigation switches where supported. Restart X to refresh cached flags. It does not change your subscription, verification or paid server features. Compose bars use X’s own customization UI when available.").setPositiveButton("OK", null).show();
+                    new AlertDialog.Builder(activity).setTitle("Client-side Premium").setMessage("Enables local Premium display settings and custom-navigation switches where supported. Restart X to refresh cached flags. It does not change your subscription, verification or paid server features. Use Timeline filters and navigation to customize supported Compose tabs.").setPositiveButton("OK", null).show();
                 } else if (which == BARS.length + 3) { next.put("downloads", !next.optBoolean("downloads", true)); save(activity, next); }
-                else if (which == BARS.length + 4) new AlertDialog.Builder(activity).setTitle("XPatch").setMessage("Independent on-device mods by sparklecat. Media handling and feature-switch names adapted from Piko (GPLv3). Source: github.com/sparklecatdev/xpatch · github.com/crimera/piko. Licenses and Piko NOTICE are included in assets/xpatch/.").setPositiveButton("OK", null).show();
-                else save(activity, new JSONObject(schema.getJSONObject("profile").toString()));
+                else if (which == BARS.length + 4) new AlertDialog.Builder(activity).setTitle("XPatch").setMessage("Independent on-device mods by sparklecat. Media handling, New X model and navigation matchers adapted from Piko (GPLv3). Source: github.com/sparklecatdev/xpatch · github.com/crimera/piko. Licenses and Piko NOTICE are included in assets/xpatch/.").setPositiveButton("OK", null).show();
+                else if (which == BARS.length + 5) save(activity, new JSONObject(schema.getJSONObject("profile").toString()));
+                else if (which == BARS.length + 6) editContent(activity);
+                else updates.menu(activity, schema);
             } catch (JSONException e) { Toast.makeText(activity, "Invalid mod settings", Toast.LENGTH_LONG).show(); }
         }).setNegativeButton("Close", null).show();
+    }
+    private void editContent(Activity activity) {
+        LinearLayout layout = new LinearLayout(activity); layout.setOrientation(LinearLayout.VERTICAL); layout.setPadding(32, 16, 32, 16);
+        String[] keys = {"hideWhoToFollow", "hideDiscoverMore", "hideTopics", "hideSpaces"};
+        String[] labels = {"Hide Who to follow", "Hide Discover more", "Hide suggested topics", "Hide Spaces bar"};
+        Switch[] toggles = new Switch[keys.length];
+        boolean timeline = schema.optBoolean("modernTimeline");
+        for (int i = 0; i < keys.length; i++) { Switch toggle = new Switch(activity); toggle.setText(labels[i]); toggle.setChecked(config.optBoolean(keys[i])); toggle.setEnabled(i == 3 ? schema.optBoolean("spaces") : timeline); layout.addView(toggle); toggles[i] = toggle; }
+        TextView help = new TextView(activity); help.setText("Navigation: HOME, EXPLORE, GROK, NOTIFICATIONS, DM, COMMUNITIES, SPACES. HOME stays visible. Restart X after changes; timeline filters apply to newly loaded entries."); layout.addView(help);
+        EditText hidden = input(activity, layout, "Hidden navigation tabs, comma separated", config.optString("navHidden"));
+        EditText order = input(activity, layout, "Navigation tab order", config.optString("navOrder"));
+        hidden.setEnabled(schema.optBoolean("navigation")); order.setEnabled(schema.optBoolean("navigation"));
+        EditText words = input(activity, layout, "Muted phrases, one per line (case insensitive)", config.optString("mutedWords")); words.setSingleLine(false); words.setMinLines(3); words.setEnabled(timeline);
+        ScrollView scroll = new ScrollView(activity); scroll.addView(layout);
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Timeline and navigation").setView(scroll).setPositiveButton("Save", null).setNegativeButton("Cancel", null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(-1).setOnClickListener(v -> {
+            try {
+                String hide = hidden.getText().toString().trim().toUpperCase(Locale.ROOT), sort = order.getText().toString().trim().toUpperCase(Locale.ROOT), mute = words.getText().toString().trim();
+                ContentFilter.validateNavigation(hide, sort, mute);
+                JSONObject next = new JSONObject(config.toString());
+                for (int i = 0; i < keys.length; i++) next.put(keys[i], toggles[i].isChecked());
+                next.put("navHidden", hide).put("navOrder", sort).put("mutedWords", mute); save(activity, next); dialog.dismiss();
+                Toast.makeText(activity, "Saved. Restart X to refresh navigation and cached entries.", Toast.LENGTH_LONG).show();
+            } catch (Exception e) { Toast.makeText(activity, e.getMessage() == null ? "Could not save settings." : e.getMessage(), Toast.LENGTH_LONG).show(); }
+        })); dialog.show();
     }
     private static EditText input(Activity activity, LinearLayout parent, String hint, String value) {
         EditText field = new EditText(activity); field.setHint(hint); field.setText(value); field.setSingleLine(true); parent.addView(field); return field;
@@ -297,6 +301,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         }).setNegativeButton("Close", null).show();
     }
     @Override public void onActivityResumed(Activity activity) {
+        updates.resume(activity, schema);
         if (listeners.containsKey(activity)) return;
         WeakReference<Activity> reference = new WeakReference<>(activity);
         Runnable scan = () -> { Activity current = reference.get(); if (current != null) { pending.remove(current); scan(current); } };
@@ -304,6 +309,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         listeners.put(activity, listener); activity.getWindow().getDecorView().getViewTreeObserver().addOnGlobalLayoutListener(listener); scan(activity);
     }
     @Override public void onActivityPaused(Activity activity) {
+        updates.pause(activity);
         ViewTreeObserver.OnGlobalLayoutListener listener = listeners.remove(activity);
         if (listener != null) activity.getWindow().getDecorView().getViewTreeObserver().removeOnGlobalLayoutListener(listener);
         Runnable task = pending.remove(activity); if (task != null) handler.removeCallbacks(task);

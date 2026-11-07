@@ -27,7 +27,7 @@ public final class FolderWatch extends JobService {
         String folder = prefs.getString("folder", ""); if (folder.isEmpty()) return;
         Uri tree = Uri.parse(folder);
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-        Set<String> seen = new LinkedHashSet<>(prefs.getStringSet("seen.engine2", Collections.emptySet()));
+        Set<String> seen = new LinkedHashSet<>(prefs.getStringSet("seen.engine" + Pipeline.ENGINE, Collections.emptySet()));
         File source = new File(getCacheDir(), "watch-input.apk");
         String latestId = null, latestName = null; long latestTime = Long.MIN_VALUE;
         try (Cursor cursor = getContentResolver().query(children, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED}, null, null, null)) {
@@ -58,7 +58,7 @@ public final class FolderWatch extends JobService {
         } finally {
             source.delete();
             while (seen.size() > 100) seen.remove(seen.iterator().next());
-            prefs.edit().putStringSet("seen.engine2", seen).apply();
+            prefs.edit().putStringSet("seen.engine" + Pipeline.ENGINE, seen).apply();
         }
     }
     @Override public boolean onStopJob(JobParameters params) { stopped = true; return true; }

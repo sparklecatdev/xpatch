@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the synthetic patch/install/runtime smoke test on a disposable emulator."""
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -89,21 +90,27 @@ wait_for(lambda: any("Application hook: matched" in (text or "") for text in tex
 click("Build patched APK", scroll=True)
 
 
+def generation():
+    prefs = ET.fromstring(shell("run-as", "dev.sparklecat.xpatch", "cat", "shared_prefs/xpatch.xml"))
+    return next((node.text for node in prefs if node.get("name") == "output"), "")
+
+
 def built():
-    files = shell("run-as", "dev.sparklecat.xpatch", "ls", "files")
-    return "patched.apk" in files and "report.txt" in files
+    return generation().startswith("build-")
 
 
 wait_for(built, timeout=90)
 patched = work / "patched-fixture.apk"
-patched.write_bytes(run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", "files/patched.apk"))
-report = run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", "files/report.txt").decode()
+patched.write_bytes(run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", f"files/{generation()}/patched.apk"))
+report = run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", f"files/{generation()}/report.txt").decode()
 assert "fixture-1" in report and "2 timeline parser(s)" in report, report
 assert "Premium UI: 1 site(s)" in report, report
 (work / "report.txt").write_text(report)
 with zipfile.ZipFile(patched) as apk:
     assert apk.read("assets/xpatch/NOTICE") == (ROOT / "third_party/piko/NOTICE").read_bytes()
     assert apk.read("assets/xpatch/Piko-LICENSE.txt") == (ROOT / "third_party/piko/Piko-LICENSE.txt").read_bytes()
+    assert apk.read("assets/xpatch/release-notes.txt") == (ROOT / "app/src/main/assets/xpatch/release-notes.txt").read_bytes()
+    assert json.loads(apk.read("assets/xpatch/profile.json"))["patchVersion"] == "0.3.0-alpha.1"
 shell("pm", "uninstall", "com.twitter.android")
 run("install", str(patched))
 shell("am", "start", "-n", "com.twitter.android/.FixtureActivity")
@@ -148,8 +155,8 @@ click("Inspect this screen")
 assert "toolbar" in texts()
 shell("input", "keyevent", "4")
 click("XPatch mods")
-click("Promoted posts: hidden")
-wait_for(lambda: "Promoted posts: hidden" not in texts())
+click("Ad filtering: hidden")
+wait_for(lambda: "Ad filtering: hidden" not in texts())
 time.sleep(.5)
 restart()
 wait_for(lambda: "Visible entries: 3" in texts())
@@ -162,5 +169,17 @@ click("Clear list")
 click("Save X media")
 assert "Open a post containing" in " ".join(text for text in texts() if text)
 click("OK")
+click("XPatch mods")
+click("Updates and release notes", scroll=True)
+assert "Check mod updates on launch" in texts()
+click("What's new")
+assert any("What's new · XPatch" in (text or "") for text in texts())
+click("Done")
 (work / "fixture.png").write_bytes(run("exec-out", "screencap", "-p"))
-print("PASS: patch, signature, install, ad filtering, Premium display state, original photo/highest MP4 selection, in-app toggles, bar hiding, inspector, persistent settings, license assets")
+shell("am", "force-stop", "dev.sparklecat.xpatch")
+shell("am", "start", "-n", "dev.sparklecat.xpatch/.MainActivity")
+wait_for(lambda: any("Saved X fixture-1" in (text or "") for text in texts()))
+click("What's new in this version", scroll=True)
+assert any("What's new ·" in (text or "") for text in texts())
+click("Done")
+print("PASS: patch, signature, install, ad filtering, Premium display state, original photo/highest MP4 selection, in-app toggles, bar hiding, inspector, persistent settings, update menus, saved APK restore, license assets")

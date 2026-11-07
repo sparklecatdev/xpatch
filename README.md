@@ -16,20 +16,23 @@
 
 A native Android app that patches your own X / Twitter APK on-device. It has its own bytecode matchers, injected mod runtime and APK signer. It does not depend on ReVanced, Morphe or Piko patch releases.
 
-**Early preview.** The engine matches X `12.41.0-prod.01`, including its new Kotlin serialization path. Signed-in timeline behavior still needs verification. Native view controls work in the test fixture; Compose-only bars are not supported yet. See the compatibility table below before installing.
+**Early preview.** The engine matches and rebuilds X `12.41.0-prod.01`, including its newer timeline models and Compose navigation. Signed-in ad removal and real media downloads still need device verification. See the compatibility table before installing.
 
 > Unofficial project. Not affiliated with X Corp., ReVanced, Morphe or Piko. X APKs are not included.
 
 ## Features
 
-- **Promoted timeline filtering** — matches serialized `entryId` and `promotedMetadata` fields instead of hardcoded obfuscated names. Supports the older mapper path and the newer Kotlin collection decoder.
+- **Ad filtering across matched models** — promoted posts, nested modules, promoted trends/events, RTB image ads and video pre-roll metadata. Matches schema names and constructor behavior instead of hardcoded obfuscated fields. Conversation modules retain their headers, sorting and remaining post IDs.
 - **Original-size media downloads** — tap **Save** inside X. Photos request `name=orig` while preserving JPEG, PNG or WebP; videos use the highest-bitrate MP4 exposed in the decoded media variants.
 - **Client-side Premium cosmetics** — enables local Premium display settings and the older custom-navigation switches when those hooks exist. Toggle it from the patcher or the live menu, then restart X.
-- **Native bar controls** — hide, scale and recolor matching bottom navigation, toolbar, timeline tabs, sidebar, post actions and compose views. Reorder named children of a `LinearLayout`.
+- **Navigation and timeline controls** — hide or reorder supported navigation tabs, hide home timeline tabs and the Spaces bar, remove Who to follow / Discover more / suggested topics, and mute phrases locally. Home stays available. Unknown future tabs stay visible.
+- **Native bar controls** — hide, scale and recolor matching bottom navigation, toolbar, timeline tabs, sidebar, post actions and compose views. Reorder named children of a `LinearLayout`. Compose navigation uses its own matched hooks; native colors and scaling do not apply to Compose elements.
 - **Live mod menu** — tap **XP** inside patched X to change settings, inspect resource names and hide individual native views. Changes persist across restarts.
 - **APK and split support** — import APK, XAPK, APKM or a device-compatible APKS set, or read your installed stock X. Every part must have a valid signature, matching version and matching signer.
-- **Saved profiles and folder watch** — check a folder about every 15 minutes and rebuild new inputs with your settings. Android controls scheduling; installation requires your confirmation.
-- **Offline and root-free** — patching stays on your device. No account login, analytics or network permission in the patcher.
+- **Verified updates** — check stable or preview releases in XPatch or from inside X. Optional checks on startup / return and automatic downloads. Published SHA-256, APK signature, package and increasing version must all pass before installation. Release notes are available in both apps.
+- **Saved source, profiles and folder watch** — reopen the verified stock APK after restarting XPatch, rebuild with the new engine and the same device key, import/export build profiles, or check a folder about every 15 minutes for new inputs. Android controls scheduling; installation requires your confirmation.
+- **Diagnostics** — export compatibility results and the last 20 operation results without account details or signing keys.
+- **On-device and root-free** — patching works offline. Optional update checks contact GitHub over HTTPS. No X login or analytics in the patcher.
 
 Premium cosmetics do not change your subscription, verification or server-side entitlements. The current X build exposes Premium display settings; its older custom-navigation switches are absent.
 
@@ -53,17 +56,26 @@ Keep XPatch installed and preserve its app data. The signing key for your patche
 
 The media picker holds up to 120 recently decoded media URLs in memory. Prefetched posts can appear, so check the preview URL before downloading. **Clear list** empties it. Video quality is the best MP4 variant X supplies, which may differ from the uploaded original; live streams and HLS-only media are not supported. Downloads use Android Download Manager.
 
+## Updates
+
+Open **New versions** in XPatch or **XP → Updates and release notes** inside X. Preview releases are included by default; automatic checks and downloads are opt-in. The patcher checks again when you return after 15 minutes. A verified download offers **Install** or **Later**; Android handles installation.
+
+Engine updates ship in the XPatch APK. After updating it, rebuild the saved stock APK and install the result. Keep the same XPatch app data to retain the signing key; updating patched X with that key retains X's data and live settings. The in-X menu shows the patch version actually injected into X, which changes only after rebuilding. New patch versions show their notes on the next launch.
+
+Plural's release selection, verification, update notices, retained-source rebuilds and diagnostics are adapted here. X has no equivalent public upstream APK release feed, so XPatch takes APKs you supply. It does not download unverified APKs from mirrors, load separate patch-engine packs or use Plural's account/cloud-save service. Profile files provide a local backup of build settings; they do not contain X's live preferences or signing key.
+
 ## Compatibility
 
 | Check | Status |
 | --- | --- |
-| X `12.41.0-prod.01` / version code `312410001` | Structural match: 1 collection parser, 16 entry models, 3 promoted metadata fields, 24 media models / 14 parsers, 2 Premium display sites |
+| X `12.41.0-prod.01` / version code `312410001` | Structural match: 2 timeline parsers, 18 entry models, 22 modern model schemas, 1 navigation factory, 3 Compose bar hooks, 1 pre-roll metadata constructor, 28 media models / 14 parsers / 9 constructors, 2 Premium display sites |
 | X `12.41.0-prod.01`, four installed APK parts | On-device rebuild, Android installer, launch to login and live mod menu verified on Android 16 emulator |
-| Synthetic legacy and modern timelines | Patch, sign, install, ad filtering, Premium display state, original photo / best MP4 selection, live bar hiding and saved settings verified on Android 16 emulator |
+| Synthetic legacy and modern timelines | Patch, sign, install, ad filtering, Premium display state, original photo / best MP4 selection, live bar hiding, saved settings, update menus and saved APK restoration verified on Android 16 emulator |
+| Nested modules, sponsored trends / RTB ads and navigation | Unit tests cover removal, conversation ID repair, preserved metadata, immutable inputs, tab ordering and validation |
 | Signed-in X timelines and real media downloads | Not verified; report results with your X version and device |
 | Native views with matching resource names | Hide, visual scale, background color; child ordering requires `LinearLayout` |
-| Compose-only bars | Unsupported; no native resource name to target |
-| Other ad formats / future versions | Not guaranteed; new schemas may require an engine update |
+| Compose navigation / home tabs / Spaces | Matching hooks found in X 12.41; signed-in behavior unverified. Colors, scaling and arbitrary Compose inspection are unsupported |
+| Every ad placement / future versions | Not established. Search, replies, profiles and video playback need signed-in checks; new formats may require an engine update |
 
 New APKs are analyzed again. Unmatched ad hooks stop the build when ad removal is enabled; disabling that option allows a UI-only build. Structural matching is a compatibility check, not a promise that every future release works. Signature checks detect damaged or inconsistent inputs; they do not certify that a third-party APK is an official X release. Supply your own trusted, unmodified copy.
 
@@ -91,6 +103,6 @@ The script refuses to replace a non-fixture X installation. It clears XPatch tes
 
 ## Credits
 
-[plural-star-mods](https://github.com/sparklecatdev/plural-star-mods) supplied the ZIP alignment/signing foundation, cat artwork and README layout. The matchers and injected X runtime are maintained here. [Piko](https://github.com/crimera/piko) supplied media traversal / original-image handling and feature-switch names, adapted to discovered fields and current schemas. Its GPLv3 license and required [NOTICE](third_party/piko/NOTICE) are preserved in this repo, XPatch and each patched base APK. ReVanced and Morphe helped establish the feature wishlist; upstream patch bundles are not included.
+[plural-star-mods](https://github.com/sparklecatdev/plural-star-mods) supplied the signing foundation, update flow, cat artwork and README layout. [Piko](https://github.com/crimera/piko) supplied media traversal / original-image handling and feature-switch names. [Piko's current-X implementation](https://github.com/crimera/piko/tree/86fb221bf9d901cf8d3f8d3dcd94fa498a9966fb) supplied current X ad-model and navigation references. These are adapted to discovered fields and current schemas; matchers and the injected runtime are maintained here. The GPLv3 license and required [NOTICE](third_party/piko/NOTICE) are preserved in this repo, XPatch and each patched base APK. ReVanced and Morphe helped establish the feature wishlist; upstream patch bundles are not included.
 
 Licensed under **AGPL-3.0-only**. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

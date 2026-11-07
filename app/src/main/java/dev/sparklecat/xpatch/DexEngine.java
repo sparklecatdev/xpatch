@@ -28,6 +28,7 @@ public final class DexEngine {
         public final String application;
         public final Map<String, String> entryFields = new TreeMap<>();
         public final Map<String, String> promotedFields = new TreeMap<>();
+        final ModernHooks modern = new ModernHooks();
         public int premiumSites;
         final Map<String, String> premiumFields = new TreeMap<>();
         public final Map<String, Map<String, String>> mediaFields = new TreeMap<>();
@@ -37,8 +38,8 @@ public final class DexEngine {
         final Set<String> hooks = new HashSet<>();
         boolean applicationFound;
         Plan(String application) { this.application = application; }
-        public boolean adsAvailable() { return !hooks.isEmpty() || !collectionHooks.isEmpty(); }
-        public String summary() { return (hooks.size() + collectionHooks.size()) + " timeline parser(s) · " + entryFields.size() + " model(s)\nPremium UI: " + premiumSites + " site(s)\nMedia: " + mediaFields.size() + " model(s), " + mediaHooks.size() + " parser(s)\nClient flags: " + flagHooks.values().stream().mapToInt(Integer::intValue).sum() + " site(s)\nApplication hook: " + (applicationFound ? "matched" : "missing"); }
+        public boolean adsAvailable() { return !hooks.isEmpty() || !collectionHooks.isEmpty() || !modern.lists.isEmpty(); }
+        public String summary() { return (hooks.size() + collectionHooks.size() + modern.lists.size()) + " timeline parser(s) · " + entryFields.size() + " model(s)\nModern ad models: " + modern.models.size() + " · navigation: " + modern.navigation.size() + " · Compose bars: " + modern.hidden.size() + "\nVideo pre-roll metadata: " + modern.preroll.size() + " constructor(s)\nPremium UI: " + premiumSites + " site(s)\nMedia: " + mediaFields.size() + " model(s), " + mediaHooks.size() + " parser(s), " + modern.mediaConstructors.size() + " constructor(s)\nClient flags: " + flagHooks.values().stream().mapToInt(Integer::intValue).sum() + " site(s)\nApplication hook: " + (applicationFound ? "matched" : "missing"); }
     }
     static String key(Method method) {
         return method.getDefiningClass() + "->" + method.getName() + method.getParameterTypes() + method.getReturnType();
@@ -232,6 +233,7 @@ public final class DexEngine {
                 for (ClassDef cls : read(zip, entry).getClasses()) {
                     if (cls.getType().startsWith("Ldev/sparklecat/xpatch/runtime/")) throw new IOException("Already patched APK. Select the original.");
                     if (cls.getType().equals(plan.application)) plan.applicationFound = true;
+                    plan.modern.scan(cls, plan);
                     serializer(cls, plan);
                     apolloMedia(cls, plan);
                     premiumDisplay(cls, plan);
@@ -279,6 +281,7 @@ public final class DexEngine {
                 }
             }
         }
+        plan.modern.finish(plan);
         if (plan.entryFields.isEmpty() || plan.collectionHooks.size() != 1) plan.collectionHooks.clear();
         for (Map.Entry<String, String> candidate : candidates.entrySet()) {
             String model = candidate.getValue();
@@ -358,6 +361,7 @@ public final class DexEngine {
                 methods.add(plan.flagHooks.containsKey(key(method)) ? flags(patched) : patched); changed = true;
             } else if (plan.flagHooks.containsKey(key(method))) { methods.add(flags(method)); changed = true; }
             else if (method.getName().equals("<init>") && method.getImplementation() != null && plan.premiumFields.containsKey(cls.getType())) { methods.add(premiumConstructor(method, plan.premiumFields.get(cls.getType()))); changed = true; }
+            else if (plan.modern.contains(method)) { methods.add(plan.modern.rewrite(method)); changed = true; }
             else methods.add(method);
         }
         if (application && !onCreate) {

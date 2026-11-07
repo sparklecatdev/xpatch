@@ -26,11 +26,33 @@ public final class MainActivity extends Activity {
     private JSONObject profile;
     private Pipeline.Input input;
     private boolean busy;
+    private Boolean queuedUpdateCheck;
+    private UpdateClient updates;
+    private UpdatePolicy.Release pendingUpdate;
+    private long lastUpdateCheck;
+    private final Set<String> updateNotices = new HashSet<>();
     private static final int INK = 0xfffaf5ff, MUTED = 0xffb9aec9, ACCENT = 0xffd7b8ff;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         try { profile = Pipeline.profile(this); Profile.validate(profile); } catch (Exception e) { try { profile = Profile.defaults(); } catch (JSONException impossible) { throw new IllegalStateException(impossible); } }
+        updates = new UpdateClient(this);
         render();
+        if ("dev.sparklecat.xpatch.CHECK_UPDATES".equals(getIntent().getAction())) queuedUpdateCheck = false;
+        else if (getSharedPreferences("xpatch", 0).getBoolean("startupUpdates", false)) queuedUpdateCheck = true;
+        File source = new File(getFilesDir(), "source.apk");
+        if (source.isFile()) run("Restoring and verifying saved stock APK…", () -> {
+            input = Pipeline.inspect(this, source);
+            runOnUiThread(() -> { if (!isDestroyed()) identity.setText("Saved X " + input.version + "\n" + input.plan.summary()); });
+            showStatus("Saved stock APK verified. Rebuild to apply this engine with your saved profile.");
+        });
+        else drainUpdateCheck();
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent);
+        if ("dev.sparklecat.xpatch.CHECK_UPDATES".equals(intent.getAction())) { queuedUpdateCheck = false; drainUpdateCheck(); }
+    }
+    private void drainUpdateCheck() {
+        if (!busy && queuedUpdateCheck != null && !isDestroyed()) { boolean quiet = queuedUpdateCheck; queuedUpdateCheck = null; checkUpdates(quiet); }
     }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
     private GradientDrawable background(int color, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); return d; }
@@ -66,9 +88,9 @@ public final class MainActivity extends Activity {
         button(source, "Use installed X", this::installed);
         LinearLayout mods = card(page, "02", "Make it yours");
         mods.addView(text("Less noise. More control.", 22, INK));
-        Switch ads = new Switch(this); ads.setText("Remove promoted timeline entries"); ads.setTextColor(INK); ads.setChecked(profile.optBoolean("ads")); mods.addView(ads); controls.add(ads);
+        Switch ads = new Switch(this); ads.setText("Remove promoted content"); ads.setTextColor(INK); ads.setChecked(profile.optBoolean("ads")); mods.addView(ads); controls.add(ads);
         ads.setOnCheckedChangeListener((v, checked) -> { try { profile.put("ads", checked); saveProfile(); } catch (JSONException ignored) { } });
-        mods.addView(text("Ads require a matching timeline schema. Other ad formats are not covered yet.", 12, MUTED));
+        mods.addView(text("Filters promoted posts, nested modules, promoted trends and RTB image ads when their schemas match. Signed-in coverage must be checked on your X version.", 12, MUTED));
         for (String option : new String[]{"premium", "downloads"}) {
             Switch toggle = new Switch(this); toggle.setText(option.equals("premium") ? "Client-side Premium cosmetics" : "Original photos and highest-quality MP4 downloads"); toggle.setTextColor(INK); toggle.setChecked(profile.optBoolean(option, option.equals("downloads"))); mods.addView(toggle); controls.add(toggle);
             toggle.setOnCheckedChangeListener((v, checked) -> { try { profile.put(option, checked); saveProfile(); } catch (JSONException ignored) { } });
@@ -77,6 +99,7 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < Profile.BAR_KEYS.length; i++) {
             final String key = Profile.BAR_KEYS[i]; button(mods, Profile.BAR_LABELS[i] + "  ›", () -> editBar(key));
         }
+        button(mods, "Timeline & navigation", this::editContent);
         button(mods, "Hide custom resource names", this::editHidden);
         mods.addView(text("Tap the XP button inside patched X for live controls and a view inspector. Compose-only elements may have no resource names.", 12, MUTED));
         LinearLayout patch = card(page, "03", "Build & install");
@@ -88,8 +111,23 @@ public final class MainActivity extends Activity {
         button(updates, "Watch an APK folder", () -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), 12));
         button(updates, "Stop folder watch", () -> { ((JobScheduler) getSystemService(JOB_SCHEDULER_SERVICE)).cancel(FolderWatch.JOB); getSharedPreferences("xpatch", 0).edit().remove("folder").apply(); status.setText("Folder watch stopped."); });
         updates.addView(text("Checks your selected folder about every 15 minutes. New APKs and bundles use your saved profile; unmatched patches stop the build. Installation stays manual.", 12, MUTED));
+        Switch previews = new Switch(this); previews.setText("Include preview updates"); previews.setTextColor(INK); previews.setChecked(getSharedPreferences("xpatch", 0).getBoolean("previewUpdates", true)); updates.addView(previews); controls.add(previews);
+        previews.setOnCheckedChangeListener((v, checked) -> getSharedPreferences("xpatch", 0).edit().putBoolean("previewUpdates", checked).apply());
+        Switch startup = new Switch(this); startup.setText("Check for updates on startup"); startup.setTextColor(INK); startup.setChecked(getSharedPreferences("xpatch", 0).getBoolean("startupUpdates", false)); updates.addView(startup); controls.add(startup);
+        startup.setOnCheckedChangeListener((v, checked) -> getSharedPreferences("xpatch", 0).edit().putBoolean("startupUpdates", checked).apply());
+        Switch automatic = new Switch(this); automatic.setText("Automatically download verified updates"); automatic.setTextColor(INK); automatic.setChecked(getSharedPreferences("xpatch", 0).getBoolean("downloadUpdates", false)); updates.addView(automatic); controls.add(automatic);
+        automatic.setOnCheckedChangeListener((v, checked) -> getSharedPreferences("xpatch", 0).edit().putBoolean("downloadUpdates", checked).apply());
+        button(updates, "Check XPatch updates & release notes", () -> checkUpdates(false));
+        button(updates, "What's new in this version", this::releaseNotes);
+        button(updates, "Install downloaded XPatch update", this::installUpdate);
+        updates.addView(text("App updates include the patch engine. Downloads are checked against published SHA-256, package, version and this installation’s signing certificate. Android confirms installation.", 12, MUTED));
+        LinearLayout tools = card(page, "05", "Profiles & support");
+        button(tools, "Export profile", () -> document(13, "xpatch-profile.json", "application/json"));
+        button(tools, "Import profile", () -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE), 14));
+        button(tools, "Export diagnostics", () -> document(15, "xpatch-diagnostics.txt", "text/plain"));
+        tools.addView(text("Diagnostics include versions, compatibility results and the last 20 operation results. They contain no account details or signing keys.", 12, MUTED));
         status = text(getSharedPreferences("xpatch", 0).getString("status", "Ready. Select an APK to inspect its compatibility."), 13, MUTED); status.setTextIsSelectable(true); page.addView(status);
-        page.addView(text("Offline · No root · No account access", 12, ACCENT));
+        page.addView(text("On-device patching · No root · No account access", 12, ACCENT));
         availability();
     }
     private void availability() {
@@ -103,11 +141,11 @@ public final class MainActivity extends Activity {
             try { synchronized (Pipeline.LOCK) { task.run(); } }
             catch (Exception e) { showStatus("Could not finish: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())); }
             catch (OutOfMemoryError e) { showStatus("Not enough memory to rebuild this APK. Close other apps and try again on a device with more memory."); }
-            finally { runOnUiThread(() -> { if (!isDestroyed()) { busy = false; availability(); } }); }
+            finally { runOnUiThread(() -> { if (!isDestroyed()) { busy = false; availability(); drainUpdateCheck(); } }); }
         });
     }
     interface Work { void run() throws Exception; }
-    private void showStatus(String value) { runOnUiThread(() -> { if (!isDestroyed()) status.setText(value); }); }
+    private void showStatus(String value) { Diagnostics.record(this, value); runOnUiThread(() -> { if (!isDestroyed()) status.setText(value); }); }
     private void importApk(InputStream stream) throws Exception {
         File temp = new File(getCacheDir(), "import.apk"), source = new File(getFilesDir(), "source.apk");
         try {
@@ -116,7 +154,7 @@ public final class MainActivity extends Activity {
             if (!temp.renameTo(source)) { checked.close(); throw new IOException("Could not retain the selected APK."); }
             if (input != null) input.close();
             input = checked;
-            runOnUiThread(() -> identity.setText("X " + checked.version + "\n" + checked.plan.summary()));
+            runOnUiThread(() -> { if (!isDestroyed()) identity.setText("X " + checked.version + "\n" + checked.plan.summary()); });
             showStatus("APK signature verified.\n" + checked.plan.summary() + "\nSHA-256: " + checked.sha + "\n\nStructural matches do not guarantee runtime compatibility.");
         } finally { temp.delete(); }
     }
@@ -171,6 +209,88 @@ public final class MainActivity extends Activity {
             catch (Exception e) { field.setError(e.getMessage()); }
         })); dialog.show();
     }
+    private void document(int request, String name, String type) {
+        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType(type).addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE, name), request);
+    }
+    private void checkUpdates(boolean quiet) {
+        lastUpdateCheck = android.os.SystemClock.elapsedRealtime();
+        run("Checking GitHub releases…", () -> {
+            UpdatePolicy.Release release = updates.check(getSharedPreferences("xpatch", 0).getBoolean("previewUpdates", true));
+            if (release == null) { showStatus("No newer XPatch release in the selected channel."); return; }
+            pendingUpdate = release;
+            showStatus("XPatch " + release.version.name + " is available.");
+            if (quiet && updateNotices.contains(release.tag)) return;
+            if (getSharedPreferences("xpatch", 0).getBoolean("downloadUpdates", false)) {
+                try { updates.verify(updates.updateFile(), release); }
+                catch (Exception missing) { updates.download(release, this::showStatus); }
+                updateNotices.add(release.tag);
+                showStatus("Update verified. Install when ready.");
+                offerInstallUpdate(release);
+                return;
+            }
+            updateNotices.add(release.tag);
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                new AlertDialog.Builder(this).setTitle("XPatch " + release.version.name).setMessage(release.notes)
+                    .setPositiveButton("Download", (d, w) -> downloadUpdate(release)).setNegativeButton("Later", null).show();
+            });
+        });
+    }
+    private void releaseNotes() {
+        try (InputStream in = getAssets().open("xpatch/release-notes.txt"); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+            ApkPatcher.copy(in, bytes, 16384);
+            new AlertDialog.Builder(this).setTitle("What's new · " + BuildConfig.VERSION_NAME).setMessage(bytes.toString("UTF-8")).setPositiveButton("Done", null).show();
+        } catch (IOException e) { showStatus("Could not read release notes."); }
+    }
+    private void downloadUpdate(UpdatePolicy.Release release) {
+        run("Preparing update…", () -> {
+            updates.download(release, this::showStatus);
+            showStatus("Update verified. Tap Install downloaded XPatch update.");
+            offerInstallUpdate(release);
+        });
+    }
+    private void offerInstallUpdate(UpdatePolicy.Release release) {
+        runOnUiThread(() -> {
+            if (isDestroyed() || isFinishing()) return;
+            new AlertDialog.Builder(this).setTitle("XPatch " + release.version.name + " ready")
+                .setMessage("The download passed checksum, package, version and signing-certificate checks. Install now or keep it for later.")
+                .setPositiveButton("Install", (d, w) -> installUpdate()).setNegativeButton("Later", null).show();
+        });
+    }
+    private void installUpdate() {
+        if (!updates.updateFile().isFile()) { showStatus("Check for updates and download a release first."); return; }
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+            showStatus("Allow installations, return here and tap Install downloaded XPatch update again."); return;
+        }
+        run("Verifying downloaded update…", () -> {
+            updates.verify(updates.updateFile(), pendingUpdate);
+            Installer.install(this, Collections.singletonList(updates.updateFile()), getPackageName());
+            showStatus("Android installer opened.");
+        });
+    }
+    private void editContent() {
+        LinearLayout form = column(); form.setPadding(dp(22), dp(8), dp(22), dp(16));
+        String[] keys = {"hideWhoToFollow", "hideDiscoverMore", "hideTopics", "hideSpaces"};
+        String[] labels = {"Hide Who to follow", "Hide Discover more", "Hide suggested topics", "Hide Spaces bar"};
+        List<Switch> switches = new ArrayList<>();
+        for (int i = 0; i < keys.length; i++) {
+            Switch v = new Switch(this); v.setText(labels[i]); v.setTextColor(INK); v.setChecked(profile.optBoolean(keys[i])); form.addView(v); switches.add(v);
+        }
+        form.addView(text("Navigation: HOME, EXPLORE, GROK, NOTIFICATIONS, DM, COMMUNITIES, SPACES. Home stays visible. Restart X after navigation changes.", 12, MUTED));
+        EditText hidden = edit(form, "Hidden navigation tabs", profile.optString("navHidden"));
+        EditText order = edit(form, "Navigation order (remaining tabs follow)", profile.optString("navOrder"));
+        EditText words = edit(form, "Muted phrases (one per line, case insensitive)", profile.optString("mutedWords")); words.setSingleLine(false); words.setMinLines(3);
+        ScrollView scroll = new ScrollView(this); scroll.addView(form);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Timeline & navigation").setView(scroll).setPositiveButton("Save", null).setNegativeButton("Cancel", null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(-1).setOnClickListener(v -> {
+            try {
+                JSONObject next = new JSONObject(profile.toString()).put("navHidden", hidden.getText().toString().trim()).put("navOrder", order.getText().toString().trim()).put("mutedWords", words.getText().toString().trim());
+                for (int i = 0; i < keys.length; i++) next.put(keys[i], switches.get(i).isChecked());
+                Profile.validate(next); profile = next; saveProfile(); dialog.dismiss();
+            } catch (Exception e) { Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show(); }
+        })); dialog.show();
+    }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
@@ -180,6 +300,22 @@ public final class MainActivity extends Activity {
             try (InputStream in = new FileInputStream(Pipeline.output(this)); OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
                 if (out == null) throw new IOException("Destination is unavailable."); ApkPatcher.copy(in, out, ApkPatcher.MAX_APK);
             } showStatus("APK saved.");
+        });
+        if (request == 13 || request == 15) run("Exporting…", () -> {
+            String content = request == 13 ? profile.toString(2) : Diagnostics.export(this, input);
+            try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                if (out == null) throw new IOException("Destination is unavailable."); out.write(content.getBytes(StandardCharsets.UTF_8));
+            }
+            showStatus(request == 13 ? "Profile exported." : "Diagnostics exported.");
+        });
+        if (request == 14) run("Importing profile…", () -> {
+            JSONObject next;
+            try (InputStream in = getContentResolver().openInputStream(uri); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                if (in == null) throw new IOException("Profile is unavailable.");
+                ApkPatcher.copy(in, bytes, 128 * 1024); next = new JSONObject(bytes.toString("UTF-8"));
+            }
+            Profile.validate(next); profile = next; saveProfile();
+            runOnUiThread(() -> { if (!isDestroyed()) { render(); status.setText("Profile imported. Build again to apply it to X."); } });
         });
         if (request == 12) {
             try {
@@ -192,6 +328,14 @@ public final class MainActivity extends Activity {
             } catch (Exception e) { showStatus("Could not watch folder: " + e.getMessage()); }
         }
     }
-    @Override protected void onResume() { super.onResume(); if (status != null && !busy) { availability(); String saved = getSharedPreferences("xpatch", 0).getString("status", ""); if (!saved.isEmpty()) status.setText(saved); } }
-    @Override protected void onDestroy() { worker.shutdown(); super.onDestroy(); }
+    @Override protected void onResume() {
+        super.onResume();
+        if (status != null && !busy) { availability(); String saved = getSharedPreferences("xpatch", 0).getString("status", ""); if (!saved.isEmpty()) status.setText(saved); }
+        if (getSharedPreferences("xpatch", 0).getBoolean("startupUpdates", false)
+                && (lastUpdateCheck == 0 || android.os.SystemClock.elapsedRealtime() - lastUpdateCheck >= 15 * 60 * 1000L)) {
+            if (queuedUpdateCheck == null) queuedUpdateCheck = true;
+            drainUpdateCheck();
+        }
+    }
+    @Override protected void onDestroy() { worker.execute(() -> { if (input != null) input.close(); }); worker.shutdown(); super.onDestroy(); }
 }

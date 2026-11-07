@@ -16,12 +16,24 @@ public final class Profile {
     };
     public static JSONObject defaults() throws JSONException {
         JSONObject root = new JSONObject().put("schema", 1).put("ads", true).put("bubble", true).put("premium", false).put("downloads", true).put("hiddenIds", "");
+        root.put("navHidden", "").put("navOrder", "").put("mutedWords", "");
+        for (String option : new String[]{"hideWhoToFollow", "hideDiscoverMore", "hideTopics", "hideSpaces"}) root.put(option, false);
         for (int i = 0; i < BAR_KEYS.length; i++) root.put(BAR_KEYS[i], new JSONObject().put("label", BAR_LABELS[i]).put("ids", String.join(",", BAR_IDS[i])).put("hide", false).put("scale", 100).put("color", "").put("order", ""));
         return root;
     }
     public static void validate(JSONObject root) throws IOException {
         if (root.optInt("schema", -1) != 1 || !(root.opt("ads") instanceof Boolean) || !(root.opt("bubble") instanceof Boolean)) throw new IOException("Invalid profile.");
-        for (String option : new String[]{"premium", "downloads"}) if (root.has(option) && !(root.opt(option) instanceof Boolean)) throw new IOException("Invalid option: " + option);
+        for (String option : new String[]{"premium", "downloads", "hideWhoToFollow", "hideDiscoverMore", "hideTopics", "hideSpaces"}) if (root.has(option) && !(root.opt(option) instanceof Boolean)) throw new IOException("Invalid option: " + option);
+        for (String key : new String[]{"navHidden", "navOrder"}) {
+            Object value = root.opt(key);
+            if (value != null && (!(value instanceof String) || ((String) value).length() > 512 || !((String) value).matches("[A-Z_,\\s]*"))) throw new IOException("Use uppercase navigation tab names.");
+        }
+        for (String key : new String[]{"navHidden", "navOrder"}) for (String tab : root.optString(key, "").split("[,\\s]+")) {
+            if (!tab.isEmpty() && !java.util.Arrays.asList("HOME", "EXPLORE", "GROK", "NOTIFICATIONS", "DM", "COMMUNITIES", "SPACES").contains(tab)) throw new IOException("Unknown navigation tab: " + tab);
+            if (key.equals("navHidden") && tab.equals("HOME")) throw new IOException("Home must remain visible.");
+        }
+        Object words = root.opt("mutedWords");
+        if (words != null && (!(words instanceof String) || ((String) words).length() > 4096 || ((String) words).split("\n").length > 64)) throw new IOException("Use at most 64 muted phrases and 4096 characters.");
         validateIds(root.optString("hiddenIds", ""));
         for (String key : BAR_KEYS) {
             JSONObject bar = root.optJSONObject(key);
