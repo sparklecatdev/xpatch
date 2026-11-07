@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" role="img" aria-labelledby="title">
+  <title id="title">XPatch</title>
+  <path fill="#20172E" d="M0,0h108v108h-108z" />
+  <path fill="#E5B5FF" d="M22,61L22,27L40,39Q54,33 68,39L86,27L86,61Q84,84 54,84Q24,84 22,61Z" />
+  <path fill="#20172E" d="M35,52h7v10h-7zM66,52h7v10h-7zM49,65h10l-5,6z" />
+  <path fill="#FFF1BA" d="M78,8L81,16L89,19L81,22L78,30L75,22L67,19L75,16Z" />
+</svg>

@@ -1,0 +1,7 @@
+<resources>
+    <item name="toolbar" type="id" />
+    <item name="bottom_navigation" type="id" />
+    <item name="home" type="id" />
+    <item name="search" type="id" />
+    <item name="profile" type="id" />
+</resources>

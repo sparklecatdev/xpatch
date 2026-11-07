@@ -1,0 +1,44 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'dev.sparklecat.xpatch'
+    compileSdk 36
+    buildToolsVersion '36.0.0'
+    defaultConfig {
+        applicationId 'dev.sparklecat.xpatch'
+        minSdk 26
+        targetSdk 36
+        versionCode 2
+        versionName '0.2.0-alpha.1'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/runtimeAssets')
+    lint { abortOnError true }
+}
+dependencies {
+    implementation 'com.android.tools.build:apksig:8.12.0'
+    implementation 'org.smali:dexlib2:2.5.2'
+    implementation 'com.google.guava:guava:33.5.0-android'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}
+def runtimeJar = tasks.register('runtimeJar', Jar) {
+    dependsOn ':runtime:compileReleaseJavaWithJavac'
+    from project(':runtime').layout.buildDirectory.dir('intermediates/javac/release/compileReleaseJavaWithJavac/classes')
+    destinationDirectory = layout.buildDirectory.dir('runtime')
+    archiveFileName = 'runtime.jar'
+}
+tasks.register('runtimeDex', Exec) {
+    dependsOn runtimeJar
+    inputs.file(runtimeJar.flatMap { it.archiveFile })
+    outputs.file(layout.buildDirectory.file('generated/runtimeAssets/runtime.dex'))
+    doFirst {
+        def out = layout.buildDirectory.dir('runtime/dex').get().asFile
+        out.mkdirs()
+        commandLine new File(android.sdkDirectory, 'build-tools/36.0.0/d8'), '--min-api', '26', '--lib', new File(android.sdkDirectory, 'platforms/android-36/android.jar'), '--output', out, runtimeJar.get().archiveFile.get().asFile
+    }
+    doLast {
+        copy { from layout.buildDirectory.file('runtime/dex/classes.dex'); into layout.buildDirectory.dir('generated/runtimeAssets'); rename 'classes.dex', 'runtime.dex' }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'runtimeDex' }

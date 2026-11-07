@@ -1,6 +1,6 @@
-__pycache__/
-*.py[cod]
-.venv/
+.gradle/
+**/build/
+local.properties
 .DS_Store
 .xpatch/
 *.apk
@@ -9,8 +9,8 @@ __pycache__/
 *.xapk
 *.keystore
 *.jks
-*.jar
-*.mpp
-dist/
-build/
-*.egg-info/
+*.p12
+*.iml
+.idea/
+.work/
+__pycache__/

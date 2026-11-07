@@ -1,65 +1,88 @@
-# XPatch
+<p align="center">
+  <img src=".github/assets/logo.svg" width="112" alt="XPatch cat logo">
+</p>
+<h1 align="center">sparklecat’s XPatch</h1>
+<p align="center"><strong>Independent X patches. Built on your phone.</strong></p>
+<p align="center">
+  <a href="https://github.com/sparklecatdev/xpatch/actions/workflows/android.yml"><img alt="Android build" src="https://github.com/sparklecatdev/xpatch/actions/workflows/android.yml/badge.svg"></a>
+  <a href="https://github.com/sparklecatdev/xpatch/releases"><img alt="Android 8+" src="https://img.shields.io/badge/Android-8%2B-b7ddad"></a>
+  <a href="LICENSE"><img alt="AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-cbb7ed"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/sparklecatdev/xpatch/releases">Download</a> ·
+  <a href="https://github.com/sparklecatdev/xpatch/issues/new/choose">Report compatibility</a> ·
+  <a href="fordevs.md">Developer guide</a>
+</p>
 
-A local patch manager for Twitter on Android. Remove ads, customize navigation and other bars, and reuse your patch profile for later supported releases.
+A native Android app that patches your own X / Twitter APK on-device. It has its own bytecode matchers, injected mod runtime and APK signer. It does not depend on ReVanced, Morphe or Piko patch releases.
 
-![XPatch interface](docs/screenshot.png)
+**Early preview.** The engine matches X `12.41.0-prod.01`, including its new Kotlin serialization path. Signed-in timeline behavior still needs verification. Native view controls work in the test fixture; Compose-only bars are not supported yet. See the compatibility table below before installing.
 
-## Run
+> Unofficial project. Not affiliated with X Corp., ReVanced, Morphe or Piko. X APKs are not included.
 
-Requires Python 3.9+ and Java 21+. The app has no Python runtime dependencies.
+## Features
+
+- **Promoted timeline filtering** — matches serialized `entryId` and `promotedMetadata` fields instead of hardcoded obfuscated names. Supports the older mapper path and the newer Kotlin collection decoder.
+- **Native bar controls** — hide, scale and recolor matching bottom navigation, toolbar, timeline tabs, sidebar, post actions and compose views. Reorder named children of a `LinearLayout`.
+- **Live mod menu** — tap **XP** inside patched X to change settings, inspect resource names and hide individual native views. Changes persist across restarts.
+- **APK and split support** — import APK, XAPK, APKM or a device-compatible APKS set, or read your installed stock X. Every part must have a valid signature, matching version and matching signer.
+- **Saved profiles and folder watch** — check a folder about every 15 minutes and rebuild new inputs with your settings. Android controls scheduling; installation requires your confirmation.
+- **Offline and root-free** — patching stays on your device. No account login, analytics or network permission in the patcher.
+
+Cosmetic Premium changes are planned. This version does not implement them or grant subscription features, verification or server-side entitlements.
+
+<p align="center"><img src=".github/assets/patcher.png" width="320" alt="XPatch Android interface"></p>
+
+## Install
+
+1. Download **xpatch.apk** from [Releases](https://github.com/sparklecatdev/xpatch/releases) and install it on Android 8 or newer.
+2. Select an unmodified X APK or complete split bundle, or choose **Use installed X**.
+3. Review the detected version and hooks. Choose your mods and tap **Build patched APK**.
+4. Tap **Install patched X**. Allow XPatch to install apps if Android asks, return to XPatch and tap the button again.
+5. Open X and tap **XP** for live controls. Use the inspector to find resource names when a native bar has changed.
+
+Stock X and patched X have different signatures. Android may require uninstalling stock X first; that removes local app data, including sessions and unsynced drafts. XPatch never uninstalls it automatically. Keep a complete split bundle for your device; a split base APK alone is insufficient.
+
+Keep XPatch installed and preserve its app data. The signing key for your patched X builds lives in Android Keystore. Clearing XPatch’s data or uninstalling it loses that key, so later builds cannot update an existing patched installation without uninstalling it. Live settings inside X and the patcher’s saved build profile are separate.
+
+## Compatibility
+
+| Check | Status |
+| --- | --- |
+| X `12.41.0-prod.01` / version code `312410001` | Structural match: 1 collection parser, 16 entry models, 3 promoted metadata fields |
+| X `12.41.0-prod.01`, four installed APK parts | On-device rebuild, Android installer, launch to login and live mod menu verified on Android 16 emulator |
+| Synthetic legacy and modern timelines | Patch, sign, install, ad filtering, live bar hiding, inspector and saved settings verified on Android 16 emulator |
+| Signed-in X timelines | Not verified; report results with your X version and device |
+| Native views with matching resource names | Hide, visual scale, background color; child ordering requires `LinearLayout` |
+| Compose-only bars | Unsupported; no native resource name to target |
+| Other ad formats / future versions | Not guaranteed; new schemas may require an engine update |
+
+New APKs are analyzed again. Unmatched ad hooks stop the build when ad removal is enabled; disabling that option allows a UI-only build. Structural matching is a compatibility check, not a promise that every future release works. Signature checks detect damaged or inconsistent inputs; they do not certify that a third-party APK is an official X release. Supply your own trusted, unmodified copy.
+
+Android 8 is the minimum for XPatch. The X version you supply may require a newer Android version. Large builds need free storage and memory; keep XPatch open while building.
+
+## Build
+
+JDK 21, Android SDK 36 and Build Tools 36.0.0 are required.
 
 ```sh
 git clone https://github.com/sparklecatdev/xpatch.git
 cd xpatch
-python3 -m xpatch
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:lintRelease :runtime:lintRelease :app:assembleDebug :app:assembleRelease :fixture:assembleDebug
 ```
 
-Open `http://127.0.0.1:8765` if your browser does not open automatically.
+Debug APK: `app/build/outputs/apk/debug/app-debug.apk`. Release builds are unsigned until signed with your publisher key; see [fordevs.md](fordevs.md). Debug and published builds use different signing identities.
 
-1. Check for patch updates. XPatch downloads the latest stable [Morphe engine](https://github.com/MorpheApp/morphe-desktop) and [Piko patches](https://github.com/crimera/piko), verifying their GitHub SHA-256 digests.
-2. Supply your own Twitter APK, APKM, APKS, or XAPK.
-3. Choose patches and save your profile. Build and download the signed APK.
-4. Install it on Android. Configure visible bar items in the patched app's Piko settings.
-
-The default **Custom interface** preset includes ad removal, navigation, sidebar, search, explore, timeline, profile, notifications, inline actions, floating action buttons, and navigation badges. **Essential** removes ads, tracking, shortened links, and Premium upsells. **Client extras** adds downloads, undo posts, picture-in-picture, HD video, and dynamic colors where supported.
-
-Client extras do not grant Premium subscriptions, verification, or server-side features.
-
-## New versions
-
-Enable **Watch the inbox** to patch new files placed in the inbox while XPatch runs. Saved profiles carry forward; the watcher checks upstream releases hourly and retries previously unsupported files after the patch catalog changes. It does not download Twitter updates or install APKs automatically.
-
-Compatibility comes from upstream patches. XPatch refuses unsupported versions instead of forcing old bytecode patches onto a new app. At initial validation, Piko 3.10.0 supported Twitter `12.19.1-release.0`. A newer Twitter release needs compatible upstream patches; this app does not generate those patches automatically.
-
-## Data and signing
-
-Data defaults to `~/.local/share/xpatch`. Set `XPATCH_DATA_DIR` or use `--data PATH` before a command to choose another folder.
-
-Keep the `signing` folder backed up. Future patched builds need the same signing key to update an existing patched installation. The stock app has a different signature, so Android may require uninstalling it first, which can remove its local data. Builds, logs, and tool versions are retained locally; original uploads remain in `inbox`.
-
-Only one process can use a data folder at a time. Stop the web app before running CLI commands against the same folder.
+Run the end-to-end fixture check on a disposable emulator:
 
 ```sh
-python3 -m xpatch sync
-python3 -m xpatch doctor
-python3 -m xpatch profile > profile.json
-python3 -m xpatch profile --import profile.json
-python3 -m xpatch patch /path/to/twitter.apk
-python3 -m xpatch watch
-python3 -m xpatch --data ./local-data serve --port 8765 --no-browser
+python3 scripts/smoke_android.py --serial emulator-5554
 ```
 
-The service binds to loopback and requires a per-session token for API access. Downloaded engines run locally with your user's permissions. No account credentials are needed.
+The script refuses to replace a non-fixture X installation. It clears XPatch test data. It does not sign into X or test live timelines.
 
-## Validation
+## Credits
 
-```sh
-python3 -m unittest discover -v
-node --check xpatch/static/app.js
-```
+[plural-star-mods](https://github.com/sparklecatdev/plural-star-mods) supplied the ZIP alignment/signing foundation, cat artwork and README layout. The matchers and injected X runtime are maintained here. ReVanced, Morphe and Piko helped establish the feature wishlist; their patch bundles are not included.
 
-Tests cover manifest parsing, upload validation, profiles, compatibility checks, checksums, job locking, typed engine options, signing-report checks, and output publication. Build tests simulate the engine. The real engine's catalog loading and release downloads have been checked; an actual Twitter APK and Android device are still required for end-to-end patch and feature validation.
-
-## Credits and licensing
-
-This repository is an independent MIT-licensed wrapper. It downloads upstream tools at runtime and does not bundle Twitter, patches, or the engine. [Piko](https://github.com/crimera/piko) and [Morphe](https://github.com/MorpheApp/morphe-desktop) are GPL-3.0 projects; their respective licenses and notices apply to those tools. See upstream repositories for source, notices, and redistribution requirements. XPatch is not affiliated with X, Piko, or Morphe.
+Licensed under **AGPL-3.0-only**. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

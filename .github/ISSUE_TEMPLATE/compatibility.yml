@@ -1,0 +1,34 @@
+name: Compatibility report
+description: Report a broken matcher, build, installation or mod.
+body:
+  - type: input
+    id: patcher
+    attributes:
+      label: XPatch version
+    validations:
+      required: true
+  - type: input
+    id: x
+    attributes:
+      label: X version and version code
+      placeholder: 12.41.0-prod.01 / 312410001
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Android version and device
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What failed?
+      description: Include selected mods, reproduction steps and expected behavior. Say whether this is a single APK or split bundle.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Compatibility report or error
+      description: Copy the status text from XPatch. Remove account details and tokens. Do not upload X APKs, signing keys or private data.
