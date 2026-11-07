@@ -69,6 +69,11 @@ public final class MainActivity extends Activity {
         Switch ads = new Switch(this); ads.setText("Remove promoted timeline entries"); ads.setTextColor(INK); ads.setChecked(profile.optBoolean("ads")); mods.addView(ads); controls.add(ads);
         ads.setOnCheckedChangeListener((v, checked) -> { try { profile.put("ads", checked); saveProfile(); } catch (JSONException ignored) { } });
         mods.addView(text("Ads require a matching timeline schema. Other ad formats are not covered yet.", 12, MUTED));
+        for (String option : new String[]{"premium", "downloads"}) {
+            Switch toggle = new Switch(this); toggle.setText(option.equals("premium") ? "Client-side Premium cosmetics" : "Original photos and highest-quality MP4 downloads"); toggle.setTextColor(INK); toggle.setChecked(profile.optBoolean(option, option.equals("downloads"))); mods.addView(toggle); controls.add(toggle);
+            toggle.setOnCheckedChangeListener((v, checked) -> { try { profile.put(option, checked); saveProfile(); } catch (JSONException ignored) { } });
+        }
+        mods.addView(text("Premium enables supported local display settings and navigation flags. No subscription or verification. Tap Save inside X for recently loaded media.", 12, MUTED));
         for (int i = 0; i < Profile.BAR_KEYS.length; i++) {
             final String key = Profile.BAR_KEYS[i]; button(mods, Profile.BAR_LABELS[i] + "  ›", () -> editBar(key));
         }

@@ -62,7 +62,11 @@ final class Pipeline {
         File splits = new File(context.getFilesDir(), "patched-splits"); ApkSet.delete(splits);
         File runtime = new File(work, "runtime.dex");
         try (InputStream in = context.getAssets().open("runtime.dex"); OutputStream out = new FileOutputStream(runtime)) { ApkPatcher.copy(in, out, 8 * 1024 * 1024); }
-        JSONObject manifest = new JSONObject().put("schema", 1).put("engine", 2).put("inputVersion", input.version).put("inputSha256", input.sha).put("entryFields", new JSONObject(input.plan.entryFields)).put("promotedFields", new JSONObject(input.plan.promotedFields)).put("profile", profile);
+        JSONObject manifest = new JSONObject().put("schema", 1).put("engine", 3).put("inputVersion", input.version).put("inputSha256", input.sha).put("entryFields", new JSONObject(input.plan.entryFields)).put("promotedFields", new JSONObject(input.plan.promotedFields)).put("mediaFields", new JSONObject(input.plan.mediaFields)).put("premiumSites", input.plan.premiumSites).put("profile", profile);
+        Map<String, byte[]> notices = new LinkedHashMap<>();
+        for (String name : new String[]{"NOTICE", "Piko-LICENSE.txt"}) {
+            try (InputStream in = context.getAssets().open("xpatch/" + name); ByteArrayOutputStream out = new ByteArrayOutputStream()) { ApkPatcher.copy(in, out, 128 * 1024); notices.put(name, out.toByteArray()); }
+        }
         boolean complete = false;
         try {
             ApkSigner.SignerConfig signer = SigningIdentity.load();
@@ -71,7 +75,7 @@ final class Pipeline {
             for (int i = 0; i < input.parts.size(); i++) {
                 ApkSet.Part part = input.parts.get(i); File file = new File(splits, "part-" + i + ".apk");
                 progress.update("Patching APK " + (i + 1) + "/" + input.parts.size());
-                ApkPatcher.patch(part.file, file, work, i == 0 ? input.plan : null, i == 0 ? runtime : null, i == 0 ? manifest.toString().getBytes(StandardCharsets.UTF_8) : null, signer, progress);
+                ApkPatcher.patch(part.file, file, work, i == 0 ? input.plan : null, i == 0 ? runtime : null, i == 0 ? manifest.toString().getBytes(StandardCharsets.UTF_8) : null, notices, signer, progress);
                 outputs.add(file);
             }
             File output;
@@ -80,7 +84,7 @@ final class Pipeline {
                 if (!outputs.get(0).renameTo(output)) throw new IOException("Could not publish output.");
                 ApkSet.delete(splits);
             } else { output = new File(context.getFilesDir(), "patched.apks"); ApkSet.archive(outputs, output); }
-            String report = "XPatch 0.2.0-alpha.1\nX version: " + input.version + "\nInput SHA-256: " + input.sha + "\nAPK count: " + input.parts.size() + "\n" + input.plan.summary() + "\nOutput SHA-256: " + ApkPatcher.sha256(output) + "\n\nBytecode matched; signed-in X behavior still needs device verification.\n";
+            String report = "XPatch 0.2.0-alpha.2\nX version: " + input.version + "\nInput SHA-256: " + input.sha + "\nAPK count: " + input.parts.size() + "\n" + input.plan.summary() + "\nOutput SHA-256: " + ApkPatcher.sha256(output) + "\n\nBytecode matched; signed-in X behavior still needs device verification.\n";
             try (Writer out = new OutputStreamWriter(new FileOutputStream(new File(context.getFilesDir(), "report.txt")), StandardCharsets.UTF_8)) { out.write(report); }
             context.getSharedPreferences("xpatch", 0).edit().putString("status", report).apply();
             complete = true; return report;

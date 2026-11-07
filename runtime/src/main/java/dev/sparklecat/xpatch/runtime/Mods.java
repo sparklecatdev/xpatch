@@ -21,6 +21,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
     private static final String BUBBLE = "xpatch.settings";
     private static volatile JSONObject config;
     private static JSONObject schema;
+    private static MediaCatalog media;
     private static SharedPreferences preferences;
     private static final Map<String, Field> entryFields = new ConcurrentHashMap<>();
     private final Map<Activity, ViewTreeObserver.OnGlobalLayoutListener> listeners = new WeakHashMap<>();
@@ -37,6 +38,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
                 while ((n = in.read(block)) != -1) { if (bytes.size() + n > 128 * 1024) throw new IOException("Profile too large"); bytes.write(block, 0, n); }
             }
             schema = new JSONObject(bytes.toString("UTF-8"));
+            media = new MediaCatalog(schema.optJSONObject("mediaFields") == null ? new JSONObject() : schema.getJSONObject("mediaFields"));
             preferences = application.getSharedPreferences("xpatch.mods.v1", Context.MODE_PRIVATE);
             JSONObject initial = schema.getJSONObject("profile");
             try { config = new JSONObject(preferences.getString("profile", initial.toString())); }
@@ -48,7 +50,9 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
     }
     public static Object filter(Object entry) {
         JSONObject options = config;
-        if (entry == null || options == null || !options.optBoolean("ads", false)) return entry;
+        if (entry == null || options == null) return entry;
+        if (options.optBoolean("downloads", true) && media != null) media.capture(entry);
+        if (!options.optBoolean("ads", false)) return entry;
         if (entry instanceof List<?>) {
             List<?> list = (List<?>) entry;
             ArrayList<Object> kept = null;
@@ -79,6 +83,18 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         } catch (Exception ignored) { }
         return entry;
     }
+    public static boolean premium(boolean original) { return config != null && config.optBoolean("premium") || original; }
+    // Feature-switch names adapted from Piko FeatureSwitchPatch (GPLv3; see NOTICE).
+    public static boolean flag(boolean original, String key) {
+        JSONObject options = config;
+        if (options == null) return original;
+        if (options.optBoolean("ads") && "ssp_ads_dsp_client_context_enabled".equals(key)) return false;
+        if (options.optBoolean("premium")) {
+            if ("subscriptions_feature_1008".equals(key)) return true;
+            if ("subscriptions_feature_1008_sunset".equals(key)) return false;
+        }
+        return original;
+    }
     private static String id(View view) {
         if (view.getId() == View.NO_ID) return "";
         try { return view.getResources().getResourceEntryName(view.getId()); }
@@ -104,7 +120,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         }
     }
     private void apply(View view, Set<String> hidden, int depth, int[] budget) {
-        if (depth > 60 || --budget[0] < 0 || BUBBLE.equals(view.getTag())) return;
+        if (depth > 60 || --budget[0] < 0 || (BUBBLE.equals(view.getTag()) || "xpatch.download".equals(view.getTag()))) return;
         String name = id(view);
         JSONObject current = config;
         if (hidden.contains(name)) {
@@ -148,6 +164,15 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         if (activity.isFinishing() || activity.isDestroyed()) return;
         View root = activity.getWindow().getDecorView();
         apply(root, new HashSet<>(names(config.optString("hiddenIds", ""))), 0, new int[]{6000});
+        View existingDownload = root.findViewWithTag("xpatch.download");
+        if (!config.optBoolean("downloads", true) && existingDownload != null) ((ViewGroup) existingDownload.getParent()).removeView(existingDownload);
+        if (config.optBoolean("downloads", true) && root instanceof FrameLayout && existingDownload == null) {
+            TextView download = new TextView(activity); download.setTag("xpatch.download"); download.setText("Save"); download.setContentDescription("Save X media"); download.setTextColor(0xff21182f); download.setTextSize(12); download.setGravity(Gravity.CENTER);
+            GradientDrawable bg = new GradientDrawable(); bg.setColor(0xffb7ddad); bg.setCornerRadius(100); download.setBackground(bg);
+            int size = (int) (48 * activity.getResources().getDisplayMetrics().density);
+            FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(size, size * 3 / 4, Gravity.END | Gravity.CENTER_VERTICAL); layout.rightMargin = size / 4; layout.topMargin = size * 2;
+            ((FrameLayout) root).addView(download, layout); download.setOnClickListener(v -> mediaMenu(activity));
+        }
         if (config.optBoolean("bubble", true) && root instanceof FrameLayout && root.findViewWithTag(BUBBLE) == null) {
             TextView bubble = new TextView(activity);
             bubble.setTag(BUBBLE); bubble.setText("XP"); bubble.setTextColor(0xff21182f); bubble.setTextSize(12); bubble.setGravity(Gravity.CENTER); bubble.setContentDescription("XPatch mods");
@@ -157,6 +182,32 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
             ((FrameLayout) root).addView(bubble, layout);
             bubble.setOnClickListener(v -> menu(activity));
         }
+    }
+    private void mediaMenu(Activity activity) {
+        List<MediaCatalog.Item> found = media == null ? Collections.emptyList() : media.snapshot();
+        if (found.isEmpty()) {
+            new AlertDialog.Builder(activity).setTitle("Save media").setMessage("Open a post containing a photo or video first. Only decoded media with a supported schema appears here. Prefetched posts may also appear.").setPositiveButton("OK", null).show(); return;
+        }
+        String[] labels = new String[found.size()];
+        for (int i = 0; i < found.size(); i++) labels[i] = found.get(i).label();
+        new AlertDialog.Builder(activity).setTitle("Recently loaded media").setItems(labels, (d, which) -> {
+            MediaCatalog.Item item = found.get(which);
+            new AlertDialog.Builder(activity).setTitle(item.quality).setMessage(item.url).setPositiveButton("Download", (dialog, ignored) -> download(activity, item)).setNegativeButton("Cancel", null).show();
+        }).setNeutralButton("Clear list", (d, w) -> media.clear()).setNegativeButton("Close", null).show();
+    }
+    private void download(Activity activity, MediaCatalog.Item item) {
+        try {
+            String name = "x-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 8) + "." + item.extension;
+            DownloadManager.Request request = new DownloadManager.Request(android.net.Uri.parse(item.url))
+                .setTitle(name).setDescription(item.quality).setMimeType(item.extension.equals("mp4") ? "video/mp4" : "image/" + (item.extension.equals("jpg") ? "jpeg" : item.extension))
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            if (Build.VERSION.SDK_INT >= 29) request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "XPatch/" + name);
+            else request.setDestinationInExternalFilesDir(activity, Environment.DIRECTORY_DOWNLOADS, name);
+            DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (manager == null) throw new IllegalStateException();
+            manager.enqueue(request);
+            Toast.makeText(activity, Build.VERSION.SDK_INT >= 29 ? "Download queued · Downloads/XPatch" : "Download queued · X app files/Download", Toast.LENGTH_LONG).show();
+        } catch (Exception e) { Toast.makeText(activity, "Could not queue download. Check storage and Download Manager.", Toast.LENGTH_LONG).show(); }
     }
     private void save(Activity activity, JSONObject next) {
         if (!preferences.edit().putString("profile", next.toString()).commit()) { Toast.makeText(activity, "Could not save mods", Toast.LENGTH_LONG).show(); return; }
@@ -169,7 +220,8 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         List<String> items = new ArrayList<>();
         items.add("Promoted posts: " + (config.optBoolean("ads") ? "hidden" : "shown"));
         for (String key : BARS) items.add(config.optJSONObject(key).optString("label", key));
-        items.add("Inspect this screen"); items.add("Reset mods");
+        items.add("Inspect this screen"); items.add("Premium cosmetics: " + (config.optBoolean("premium") ? "on" : "off"));
+        items.add("Media downloads: " + (config.optBoolean("downloads", true) ? "on" : "off")); items.add("About XPatch"); items.add("Reset mods");
         new AlertDialog.Builder(activity).setTitle("XPatch mods").setItems(items.toArray(new String[0]), (dialog, which) -> {
             try {
                 JSONObject next = new JSONObject(config.toString());
@@ -178,6 +230,12 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
                     next.put("ads", !next.optBoolean("ads")); save(activity, next);
                 } else if (which <= BARS.length) editBar(activity, BARS[which - 1]);
                 else if (which == BARS.length + 1) inspect(activity);
+                else if (which == BARS.length + 2) {
+                    if (schema.optInt("premiumSites") == 0) { Toast.makeText(activity, "No compatible Premium UI hook in this APK", Toast.LENGTH_LONG).show(); return; }
+                    next.put("premium", !next.optBoolean("premium")); save(activity, next);
+                    new AlertDialog.Builder(activity).setTitle("Client-side Premium").setMessage("Enables local Premium display settings and custom-navigation switches where supported. Restart X to refresh cached flags. It does not change your subscription, verification or paid server features. Compose bars use X’s own customization UI when available.").setPositiveButton("OK", null).show();
+                } else if (which == BARS.length + 3) { next.put("downloads", !next.optBoolean("downloads", true)); save(activity, next); }
+                else if (which == BARS.length + 4) new AlertDialog.Builder(activity).setTitle("XPatch").setMessage("Independent on-device mods by sparklecat. Media handling and feature-switch names adapted from Piko (GPLv3). Source: github.com/sparklecatdev/xpatch · github.com/crimera/piko. Licenses and Piko NOTICE are included in assets/xpatch/.").setPositiveButton("OK", null).show();
                 else save(activity, new JSONObject(schema.getJSONObject("profile").toString()));
             } catch (JSONException e) { Toast.makeText(activity, "Invalid mod settings", Toast.LENGTH_LONG).show(); }
         }).setNegativeButton("Close", null).show();
@@ -210,7 +268,7 @@ public final class Mods implements Application.ActivityLifecycleCallbacks {
         })); dialog.show();
     }
     private static void collect(View view, Set<String> ids, int depth, int[] budget) {
-        if (depth > 60 || --budget[0] < 0 || BUBBLE.equals(view.getTag())) return;
+        if (depth > 60 || --budget[0] < 0 || (BUBBLE.equals(view.getTag()) || "xpatch.download".equals(view.getTag()))) return;
         String name = id(view); if (!name.isEmpty()) ids.add(name);
         if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++) collect(((ViewGroup) view).getChildAt(i), ids, depth + 1, budget);
     }

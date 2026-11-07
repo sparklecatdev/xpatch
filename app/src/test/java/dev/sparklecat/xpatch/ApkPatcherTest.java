@@ -50,6 +50,19 @@ public class ApkPatcherTest {
         }
         fail("Native entry was not checked");
     }
+    @Test public void includesOverflowDexAndKeepsRuntimeNameUnique() throws Exception {
+        File input = temp.newFile(), output = temp.newFile(), overflow = temp.newFile(), runtime = temp.newFile();
+        Files.write(overflow.toPath(), new byte[]{7}); Files.write(runtime.toPath(), new byte[]{8});
+        try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(input))) {
+            entry(zip, "classes.dex", new byte[]{1}, false); entry(zip, "classes2.dex", new byte[]{2}, false);
+        }
+        ApkPatcher.rewrite(input, output, Collections.singletonMap("classes3.dex", overflow), runtime, new byte[0]);
+        try (ZipFile zip = new ZipFile(output)) {
+            assertArrayEquals(new byte[]{7}, zip.getInputStream(zip.getEntry("classes3.dex")).readAllBytes());
+            assertArrayEquals(new byte[]{8}, zip.getInputStream(zip.getEntry("classes4.dex")).readAllBytes());
+            assertEquals(5, zip.size());
+        }
+    }
     @Test public void boundedCopyRejectsOversizedInput() throws Exception {
         try { ApkPatcher.copy(new ByteArrayInputStream(new byte[10]), new ByteArrayOutputStream(), 9); fail(); } catch (IOException expected) { }
     }

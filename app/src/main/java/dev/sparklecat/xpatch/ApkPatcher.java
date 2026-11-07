@@ -23,7 +23,7 @@ public final class ApkPatcher {
         for (byte b : md.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 255));
         return hex.toString();
     }
-    public static void patch(File source, File output, File work, DexEngine.Plan plan, File runtime, byte[] profile, ApkSigner.SignerConfig signer, Progress progress) throws Exception {
+    public static void patch(File source, File output, File work, DexEngine.Plan plan, File runtime, byte[] profile, Map<String, byte[]> notices, ApkSigner.SignerConfig signer, Progress progress) throws Exception {
         File unsigned = new File(work, "unsigned.apk"), signed = new File(work, "signed.apk");
         // A previous build must never be offered as the result of a failed new build.
         if (output.exists() && !output.delete()) throw new IOException("Could not remove previous output.");
@@ -31,7 +31,7 @@ public final class ApkPatcher {
             progress.update("Applying independent bytecode hooks…");
             Map<String, File> replacements = plan == null ? Collections.emptyMap() : DexEngine.apply(source, work, plan);
             progress.update("Rebuilding and aligning APK…");
-            rewrite(source, unsigned, replacements, runtime, profile);
+            rewrite(source, unsigned, replacements, runtime, profile, notices);
             progress.update("Signing with your device key…");
             new ApkSigner.Builder(Collections.singletonList(signer)).setInputApk(unsigned).setOutputApk(signed)
                 .setMinSdkVersion(26).setV1SigningEnabled(false).setV2SigningEnabled(true).setV3SigningEnabled(false)
@@ -47,10 +47,13 @@ public final class ApkPatcher {
         return upper.startsWith("META-INF/") && (upper.equals("META-INF/MANIFEST.MF") || upper.endsWith(".SF") || upper.endsWith(".RSA") || upper.endsWith(".DSA") || upper.endsWith(".EC") || upper.startsWith("META-INF/SIG-"));
     }
     static void rewrite(File source, File output, Map<String, File> replacements, File runtime, byte[] profile) throws IOException {
+        rewrite(source, output, replacements, runtime, profile, Collections.emptyMap());
+    }
+    static void rewrite(File source, File output, Map<String, File> replacements, File runtime, byte[] profile, Map<String, byte[]> notices) throws IOException {
         try (ZipFile input = new ZipFile(source); CountingStream count = new CountingStream(new BufferedOutputStream(new FileOutputStream(output))); ZipOutputStream zip = new ZipOutputStream(count)) {
             List<ZipEntry> dex = runtime == null ? Collections.emptyList() : DexEngine.dexEntries(input);
-            int nextDex = 2;
-            while (input.getEntry("classes" + nextDex + ".dex") != null) nextDex++;
+            Set<String> dexNames = new HashSet<>();
+            for (ZipEntry entry : dex) dexNames.add(entry.getName());
             Set<String> seen = new HashSet<>();
             long total = 0;
             Enumeration<? extends ZipEntry> entries = input.entries();
@@ -82,12 +85,26 @@ public final class ApkPatcher {
                 try (InputStream in = replacement == null ? input.getInputStream(entry) : new FileInputStream(replacement)) { copy(in, zip, MAX_APK); }
                 zip.closeEntry();
             }
+            for (Map.Entry<String, File> replacement : replacements.entrySet()) {
+                String name = replacement.getKey();
+                if (seen.contains(name)) continue;
+                if (!name.matches("classes(?:[2-9]|[1-9][0-9]+)?\\.dex")) throw new IOException("Invalid additional DEX name.");
+                if (replacement.getValue().length() > MAX_APK || (total += replacement.getValue().length()) > 3 * MAX_APK) throw new IOException("APK exceeds the expanded size limit.");
+                zip.putNextEntry(new ZipEntry(name));
+                try (InputStream in = new FileInputStream(replacement.getValue())) { copy(in, zip, MAX_APK); }
+                zip.closeEntry();
+                dexNames.add(name);
+            }
             if (runtime == null) return;
             if (dex.isEmpty()) throw new IOException("APK has no code.");
-            zip.putNextEntry(new ZipEntry("classes" + nextDex + ".dex"));
+            zip.putNextEntry(new ZipEntry(DexEngine.nextDexName(dexNames)));
             try (InputStream in = new FileInputStream(runtime)) { copy(in, zip, 8L * 1024 * 1024); }
             zip.closeEntry();
             zip.putNextEntry(new ZipEntry("assets/xpatch/profile.json")); zip.write(profile); zip.closeEntry();
+            for (Map.Entry<String, byte[]> notice : notices.entrySet()) {
+                if (!notice.getKey().matches("[A-Za-z0-9_.-]+")) throw new IOException("Invalid notice name.");
+                zip.putNextEntry(new ZipEntry("assets/xpatch/" + notice.getKey())); zip.write(notice.getValue()); zip.closeEntry();
+            }
         }
     }
     public static long copy(InputStream in, OutputStream out, long max) throws IOException {

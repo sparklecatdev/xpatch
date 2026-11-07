@@ -26,5 +26,7 @@ public final class FixtureActivity extends Activity {
         String[] names = {"Home", "Search", "Profile"}; int[] ids = {R.id.home, R.id.search, R.id.profile};
         for (int i = 0; i < names.length; i++) { TextView child = label(names[i]); child.setId(ids[i]); navigation.addView(child); }
         page.addView(navigation);
+        new MediaSerializer().deserialize(null); new MediaSerializer.VideoSerializer().deserialize(null);
+        page.addView(label("Premium display: " + new DisplayState(false, true).a));
     }
 }

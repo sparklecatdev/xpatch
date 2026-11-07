@@ -55,6 +55,31 @@ public class DexEngineTest {
         }
         assertTrue(filter); assertTrue(bootstrap);
     }
+    @Test public void splitsOverflowingDexWithoutLosingOrDuplicatingClasses() throws Exception {
+        List<ClassDef> classes = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String type = "Lexample/C" + i + ";";
+            List<Method> methods = new ArrayList<>();
+            for (int j = 0; j < 5; j++) methods.add(method(type, "m" + j, "V", 1, Collections.singletonList(new ImmutableInstruction10x(Opcode.RETURN_VOID))));
+            classes.add(cls(type, Collections.emptyList(), methods));
+        }
+        Set<String> names = new HashSet<>(Arrays.asList("classes.dex", "classes2.dex"));
+        Map<String, File> files = DexEngine.writeDexes(classes, Opcodes.forApi(26), temp.newFolder(), "classes.dex", names, 8);
+        assertEquals(new LinkedHashSet<>(Arrays.asList("classes.dex", "classes3.dex", "classes4.dex")), files.keySet());
+        Set<String> found = new HashSet<>();
+        for (File file : files.values()) {
+            try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(file))) {
+                org.jf.dexlib2.dexbacked.DexBackedDexFile dex = org.jf.dexlib2.dexbacked.DexBackedDexFile.fromInputStream(null, in);
+                assertTrue(dex.getMethodSection().size() <= 8);
+                for (ClassDef c : dex.getClasses()) assertTrue(found.add(c.getType()));
+            }
+        }
+        assertEquals(new HashSet<>(Arrays.asList("Lexample/C0;", "Lexample/C1;", "Lexample/C2;")), found);
+        try {
+            DexEngine.writeDexes(classes, Opcodes.forApi(26), temp.newFolder(), "classes.dex", new HashSet<>(names), 4);
+            fail("An indivisible class must not produce an overflowing DEX");
+        } catch (IOException expected) { assertTrue(expected.getMessage().contains("Class exceeds")); }
+    }
     @Test public void ambiguousStringFieldDoesNotGuess() throws Exception { assertFalse(DexEngine.analyze(fixture(true), "example.App").adsAvailable()); }
     @Test public void missingApplicationIsRejected() throws Exception {
         try { DexEngine.analyze(fixture(false), "missing.App"); fail(); } catch (IOException expected) { assertTrue(expected.getMessage().contains("Application")); }
@@ -97,5 +122,53 @@ public class DexEngineTest {
         assertNotNull(DexEngine.collectionDeserializer(cls(type, Collections.emptyList(), Collections.singletonList(deserialize))));
         code.remove(2);
         assertNull(DexEngine.collectionDeserializer(cls(type, Collections.emptyList(), Collections.singletonList(method(type, "helper", "Ljava/lang/Object;", 2, code)))));
+    }
+    @Test public void premiumDisplayOnlyChangesThePremiumConstructorField() {
+        String type = "Lrenamed/Display;";
+        ImmutableFieldReference premium = new ImmutableFieldReference(type, "p", "Z"), subscribe = new ImmutableFieldReference(type, "s", "Z");
+        List<Instruction> description = new ArrayList<>();
+        for (String value : Arrays.asList("DisplaySettingsState(darkModeState=", ", hasPremium=", ", canSubscribe=")) description.add(new ImmutableInstruction21c(Opcode.CONST_STRING, 0, new ImmutableStringReference(value)));
+        description.add(new ImmutableInstruction22c(Opcode.IGET_BOOLEAN, 0, 2, premium));
+        description.add(new ImmutableInstruction22c(Opcode.IGET_BOOLEAN, 1, 2, subscribe));
+        description.add(new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0));
+        Method constructor = method(type, "<init>", "V", 3, Arrays.asList(new ImmutableInstruction22c(Opcode.IPUT_BOOLEAN, 0, 2, premium), new ImmutableInstruction22c(Opcode.IPUT_BOOLEAN, 1, 2, subscribe), new ImmutableInstruction10x(Opcode.RETURN_VOID)));
+        DexEngine.Plan plan = new DexEngine.Plan(APP);
+        DexEngine.premiumDisplay(cls(type, Collections.emptyList(), Arrays.asList(method(type, "toString", "Ljava/lang/String;", 3, description), constructor)), plan);
+        assertEquals("p", plan.premiumFields.get(type)); assertEquals(1, plan.premiumSites);
+        List<Instruction> patched = new ArrayList<>(); DexEngine.premiumConstructor(constructor, "p").getImplementation().getInstructions().forEach(patched::add);
+        assertEquals(5, patched.size()); assertEquals(Opcode.INVOKE_STATIC_RANGE, patched.get(0).getOpcode());
+        assertEquals(0, ((RegisterRangeInstruction) patched.get(0)).getStartRegister());
+        assertEquals(subscribe, ((ReferenceInstruction) patched.get(3)).getReference());
+        description.remove(0);
+        DexEngine.Plan other = new DexEngine.Plan(APP);
+        DexEngine.premiumDisplay(cls(type, Collections.emptyList(), Arrays.asList(method(type, "toString", "Ljava/lang/String;", 3, description), constructor)), other);
+        assertTrue(other.premiumFields.isEmpty());
+    }
+    @Test public void apolloMediaPairsJsonPropertiesWithRenamedFields() {
+        String adapter = "Lrenamed/Adapter;", json = "Lcom/apollographql/apollo/api/json/Writer;";
+        List<Instruction> code = Arrays.asList(
+            new ImmutableInstruction21c(Opcode.CONST_STRING, 0, new ImmutableStringReference("original_img_url")),
+            new ImmutableInstruction35c(Opcode.INVOKE_INTERFACE, 2, 1, 0, 0, 0, 0, new ImmutableMethodReference(json, "name", Collections.singletonList("Ljava/lang/String;"), json)),
+            new ImmutableInstruction22c(Opcode.IGET_OBJECT, 0, 2, new ImmutableFieldReference(MODEL, "photo", "Ljava/lang/String;")),
+            new ImmutableInstruction10x(Opcode.RETURN_VOID));
+        Method writer = new ImmutableMethod(adapter, "write", Arrays.asList(new ImmutableMethodParameter(json, Collections.emptySet(), null), new ImmutableMethodParameter("Ljava/lang/Object;", Collections.emptySet(), null), new ImmutableMethodParameter(MODEL, Collections.emptySet(), null)), "V", 1, Collections.emptySet(), Collections.emptySet(), new ImmutableMethodImplementation(4, code, Collections.emptyList(), Collections.emptyList()));
+        Method reader = new ImmutableMethod(adapter, "read", Arrays.asList(new ImmutableMethodParameter("Lcom/apollographql/apollo/api/json/Reader;", Collections.emptySet(), null), new ImmutableMethodParameter("Ljava/lang/Object;", Collections.emptySet(), null)), MODEL, 1, Collections.emptySet(), Collections.emptySet(), new ImmutableMethodImplementation(4, Collections.singletonList(new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0)), Collections.emptyList(), Collections.emptyList()));
+        DexEngine.Plan plan = new DexEngine.Plan(APP);
+        DexEngine.apolloMedia(cls(adapter, Collections.emptyList(), Arrays.asList(writer, reader)), plan);
+        assertEquals("photo", plan.mediaFields.get("renamed.b").get("original_img_url"));
+        assertEquals(Collections.singleton(DexEngine.key(reader)), plan.mediaHooks);
+    }
+    @Test public void featureSwitchHookPreservesResultAndRejectsUnrelatedKeys() {
+        List<Instruction> code = new ArrayList<>(Arrays.asList(
+            new ImmutableInstruction21c(Opcode.CONST_STRING, 1, new ImmutableStringReference("subscriptions_feature_1008")),
+            new ImmutableInstruction35c(Opcode.INVOKE_VIRTUAL, 2, 2, 1, 0, 0, 0, new ImmutableMethodReference("Lflags;", "get", Collections.singletonList("Ljava/lang/String;"), "Z")),
+            new ImmutableInstruction11x(Opcode.MOVE_RESULT, 0), new ImmutableInstruction11x(Opcode.RETURN, 0)));
+        Method original = method(MAPPER, "feature", "Z", 3, code);
+        assertEquals(1, DexEngine.flagSites(original).size());
+        List<Instruction> patched = new ArrayList<>(); DexEngine.flags(original).getImplementation().getInstructions().forEach(patched::add);
+        FiveRegisterInstruction hook = (FiveRegisterInstruction) patched.get(3);
+        assertEquals(0, hook.getRegisterC()); assertEquals(1, hook.getRegisterD());
+        code.set(0, new ImmutableInstruction21c(Opcode.CONST_STRING, 1, new ImmutableStringReference("unrelated")));
+        assertTrue(DexEngine.flagSites(method(MAPPER, "feature", "Z", 3, code)).isEmpty());
     }
 }

@@ -15,12 +15,13 @@ public final class Profile {
         {"composer_write", "composer_fab", "compose_fab", "floating_action_button"}
     };
     public static JSONObject defaults() throws JSONException {
-        JSONObject root = new JSONObject().put("schema", 1).put("ads", true).put("bubble", true).put("hiddenIds", "");
+        JSONObject root = new JSONObject().put("schema", 1).put("ads", true).put("bubble", true).put("premium", false).put("downloads", true).put("hiddenIds", "");
         for (int i = 0; i < BAR_KEYS.length; i++) root.put(BAR_KEYS[i], new JSONObject().put("label", BAR_LABELS[i]).put("ids", String.join(",", BAR_IDS[i])).put("hide", false).put("scale", 100).put("color", "").put("order", ""));
         return root;
     }
     public static void validate(JSONObject root) throws IOException {
         if (root.optInt("schema", -1) != 1 || !(root.opt("ads") instanceof Boolean) || !(root.opt("bubble") instanceof Boolean)) throw new IOException("Invalid profile.");
+        for (String option : new String[]{"premium", "downloads"}) if (root.has(option) && !(root.opt(option) instanceof Boolean)) throw new IOException("Invalid option: " + option);
         validateIds(root.optString("hiddenIds", ""));
         for (String key : BAR_KEYS) {
             JSONObject bar = root.optJSONObject(key);

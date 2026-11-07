@@ -11,6 +11,7 @@ import org.jf.dexlib2.iface.reference.*;
 import org.jf.dexlib2.immutable.*;
 import org.jf.dexlib2.immutable.reference.*;
 import org.jf.dexlib2.writer.pool.DexPool;
+import org.jf.dexlib2.writer.io.FileDataStore;
 import java.io.*;
 import java.util.*;
 import java.util.zip.*;
@@ -20,16 +21,24 @@ public final class DexEngine {
     static final String RUNTIME = "Ldev/sparklecat/xpatch/runtime/Mods;";
     static final ImmutableMethodReference INSTALL = new ImmutableMethodReference(RUNTIME, "install", Collections.singletonList("Landroid/app/Application;"), "V");
     static final ImmutableMethodReference FILTER = new ImmutableMethodReference(RUNTIME, "filter", Collections.singletonList("Ljava/lang/Object;"), "Ljava/lang/Object;");
+    static final Set<String> FLAGS = new HashSet<>(Arrays.asList("subscriptions_feature_1008", "subscriptions_feature_1008_sunset", "ssp_ads_dsp_client_context_enabled"));
+    static final ImmutableMethodReference PREMIUM = new ImmutableMethodReference(RUNTIME, "premium", Collections.singletonList("Z"), "Z");
+    static final ImmutableMethodReference FLAG = new ImmutableMethodReference(RUNTIME, "flag", Arrays.asList("Z", "Ljava/lang/String;"), "Z");
     public static final class Plan {
         public final String application;
         public final Map<String, String> entryFields = new TreeMap<>();
         public final Map<String, String> promotedFields = new TreeMap<>();
+        public int premiumSites;
+        final Map<String, String> premiumFields = new TreeMap<>();
+        public final Map<String, Map<String, String>> mediaFields = new TreeMap<>();
+        final Set<String> mediaHooks = new HashSet<>();
+        final Map<String, Integer> flagHooks = new TreeMap<>();
         final Set<String> collectionHooks = new HashSet<>();
         final Set<String> hooks = new HashSet<>();
         boolean applicationFound;
         Plan(String application) { this.application = application; }
         public boolean adsAvailable() { return !hooks.isEmpty() || !collectionHooks.isEmpty(); }
-        public String summary() { return (hooks.size() + collectionHooks.size()) + " timeline parser(s) · " + entryFields.size() + " model(s)\nApplication hook: " + (applicationFound ? "matched" : "missing"); }
+        public String summary() { return (hooks.size() + collectionHooks.size()) + " timeline parser(s) · " + entryFields.size() + " model(s)\nPremium UI: " + premiumSites + " site(s)\nMedia: " + mediaFields.size() + " model(s), " + mediaHooks.size() + " parser(s)\nClient flags: " + flagHooks.values().stream().mapToInt(Integer::intValue).sum() + " site(s)\nApplication hook: " + (applicationFound ? "matched" : "missing"); }
     }
     static String key(Method method) {
         return method.getDefiningClass() + "->" + method.getName() + method.getParameterTypes() + method.getReturnType();
@@ -86,7 +95,10 @@ public final class DexEngine {
                 }
             }
         }
-        if (!keys.contains("entryId") || !keys.contains("sortIndex")) return;
+        boolean timeline = keys.contains("entryId") && keys.contains("sortIndex");
+        boolean media = mediaKeys(keys);
+        if (!timeline && !media) return;
+        boolean mapped = false;
         for (Method method : cls.getMethods()) if (method.getName().equals("serialize") && method.getImplementation() != null) {
             Map<Integer, Object> values = new HashMap<>();
             for (Instruction ins : method.getImplementation().getInstructions()) {
@@ -96,7 +108,7 @@ public final class DexEngine {
                 if (ins.getOpcode().name().startsWith("MOVE_OBJECT") && ins instanceof TwoRegisterInstruction && moved != null) values.put(((TwoRegisterInstruction) ins).getRegisterA(), moved);
                 if (!(ins instanceof ReferenceInstruction)) continue;
                 Reference ref = ((ReferenceInstruction) ins).getReference();
-                if (ins.getOpcode() == Opcode.IGET_OBJECT && ref instanceof FieldReference) values.put(((OneRegisterInstruction) ins).getRegisterA(), ref);
+                if (ins.getOpcode().name().startsWith("IGET") && ref instanceof FieldReference) values.put(((OneRegisterInstruction) ins).getRegisterA(), ref);
                 if (!(ref instanceof MethodReference)) continue;
                 MethodReference call = (MethodReference) ref;
                 List<? extends CharSequence> params = call.getParameterTypes();
@@ -106,10 +118,90 @@ public final class DexEngine {
                 if (!(index instanceof Integer) || !(field instanceof FieldReference) || (int) index < 0 || (int) index >= keys.size()) continue;
                 FieldReference f = (FieldReference) field;
                 String key = keys.get((int) index);
-                if (key.equals("entryId") && f.getType().equals("Ljava/lang/String;")) plan.entryFields.put(javaName(f.getDefiningClass()), f.getName());
-                if (key.equals("promotedMetadata")) plan.promotedFields.put(javaName(f.getDefiningClass()), f.getName());
+                if (media) { plan.mediaFields.computeIfAbsent(javaName(f.getDefiningClass()), ignored -> new TreeMap<>()).put(key, f.getName()); mapped = true; }
+                if (timeline && key.equals("entryId") && f.getType().equals("Ljava/lang/String;")) plan.entryFields.put(javaName(f.getDefiningClass()), f.getName());
+                if (timeline && key.equals("promotedMetadata")) plan.promotedFields.put(javaName(f.getDefiningClass()), f.getName());
             }
         }
+        // Observe complete decoded models, including bridge methods. Runtime de-duplicates media.
+        if (mapped) for (Method method : cls.getMethods()) {
+            if (method.getName().equals("deserialize") && method.getImplementation() != null && method.getParameterTypes().toString().equals("[Lkotlinx/serialization/encoding/Decoder;]") && method.getReturnType().startsWith("L")) plan.mediaHooks.add(key(method));
+        }
+    }
+    static boolean mediaKeys(Collection<String> keys) {
+        return keys.contains("original_img_url") || keys.contains("media_url_https") || keys.contains("video_info") || keys.contains("variants") && keys.contains("aspect_ratio") || (keys.containsAll(Arrays.asList("content_type", "url")) && (keys.contains("bitrate") || keys.contains("bit_rate")));
+    }
+    // Apollo's generated JSON adapters retain field names in the writer. Pair
+    // each named property with its model field, then observe that adapter's reader.
+    static void apolloMedia(ClassDef cls, Plan plan) {
+        Map<String, Map<String, String>> models = new TreeMap<>();
+        for (Method method : cls.getMethods()) {
+            if (method.getImplementation() == null || !method.getReturnType().equals("V") || method.getParameterTypes().size() != 3 || !method.getParameterTypes().get(0).toString().startsWith("Lcom/apollographql/apollo/api/json/")) continue;
+            Map<Integer, String> strings = new HashMap<>();
+            String property = null;
+            for (Instruction ins : method.getImplementation().getInstructions()) {
+                if (ins.getOpcode().setsRegister() && ins instanceof OneRegisterInstruction) strings.remove(((OneRegisterInstruction) ins).getRegisterA());
+                if (!(ins instanceof ReferenceInstruction)) continue;
+                Reference ref = ((ReferenceInstruction) ins).getReference();
+                if (ref instanceof StringReference && ins instanceof OneRegisterInstruction) strings.put(((OneRegisterInstruction) ins).getRegisterA(), ((StringReference) ref).getString());
+                if (ref instanceof MethodReference) {
+                    MethodReference call = (MethodReference) ref;
+                    List<Integer> regs = registers(ins);
+                    if (call.getDefiningClass().startsWith("Lcom/apollographql/apollo/api/json/") && call.getParameterTypes().toString().equals("[Ljava/lang/String;]") && regs.size() == 2) property = strings.get(regs.get(1));
+                }
+                if (property != null && ins.getOpcode().name().startsWith("IGET") && ref instanceof FieldReference) {
+                    FieldReference field = (FieldReference) ref;
+                    models.computeIfAbsent(javaName(field.getDefiningClass()), ignored -> new TreeMap<>()).put(property, field.getName());
+                    property = null;
+                }
+            }
+        }
+        boolean matched = false;
+        for (Map.Entry<String, Map<String, String>> model : models.entrySet()) if (mediaKeys(model.getValue().keySet())) {
+            plan.mediaFields.computeIfAbsent(model.getKey(), ignored -> new TreeMap<>()).putAll(model.getValue()); matched = true;
+        }
+        if (!matched) return;
+        for (Method method : cls.getMethods()) {
+            if (method.getImplementation() == null || AccessFlags.STATIC.isSet(method.getAccessFlags()) || !method.getReturnType().startsWith("L") || method.getParameterTypes().size() != 2 || !method.getParameterTypes().get(0).toString().startsWith("Lcom/apollographql/apollo/api/json/")) continue;
+            for (Instruction ins : method.getImplementation().getInstructions()) if (ins.getOpcode() == Opcode.RETURN_OBJECT) { plan.mediaHooks.add(key(method)); break; }
+        }
+    }
+    // Restrict local Premium spoofing to the display settings UI state. Identity,
+    // account verification and server entitlement models are never changed.
+    static void premiumDisplay(ClassDef cls, Plan plan) {
+        for (Method method : cls.getMethods()) {
+            if (!method.getName().equals("toString") || method.getImplementation() == null) continue;
+            boolean display = false, premium = false, subscribe = false;
+            List<FieldReference> booleans = new ArrayList<>();
+            for (Instruction ins : method.getImplementation().getInstructions()) if (ins instanceof ReferenceInstruction) {
+                Reference ref = ((ReferenceInstruction) ins).getReference();
+                if (ref instanceof StringReference) {
+                    String text = ((StringReference) ref).getString();
+                    display |= text.equals("DisplaySettingsState(darkModeState=");
+                    premium |= text.equals(", hasPremium="); subscribe |= text.equals(", canSubscribe=");
+                }
+                if (ins.getOpcode() == Opcode.IGET_BOOLEAN && ref instanceof FieldReference) booleans.add((FieldReference) ref);
+            }
+            if (display && premium && subscribe && booleans.size() == 2 && booleans.get(0).getDefiningClass().equals(cls.getType())) {
+                String field = booleans.get(0).getName();
+                for (Method constructor : cls.getMethods()) if (constructor.getName().equals("<init>") && constructor.getImplementation() != null) {
+                    for (Instruction ins : constructor.getImplementation().getInstructions()) if (ins.getOpcode() == Opcode.IPUT_BOOLEAN && ins instanceof ReferenceInstruction && ((ReferenceInstruction) ins).getReference().equals(booleans.get(0))) {
+                        plan.premiumFields.put(cls.getType(), field); plan.premiumSites++; break;
+                    }
+                }
+            }
+        }
+    }
+    static Method premiumConstructor(Method method, String field) {
+        MutableMethodImplementation body = new MutableMethodImplementation(method.getImplementation());
+        for (int i = body.getInstructions().size() - 1; i >= 0; i--) {
+            Instruction ins = body.getInstructions().get(i);
+            if (ins.getOpcode() != Opcode.IPUT_BOOLEAN || !((FieldReference) ((ReferenceInstruction) ins).getReference()).getName().equals(field)) continue;
+            int value = ((TwoRegisterInstruction) ins).getRegisterA();
+            body.addInstruction(i, new BuilderInstruction11x(Opcode.MOVE_RESULT, value));
+            body.addInstruction(i, new BuilderInstruction3rc(Opcode.INVOKE_STATIC_RANGE, value, 1, PREMIUM));
+        }
+        return new ImmutableMethod(method.getDefiningClass(), method.getName(), method.getParameters(), method.getReturnType(), method.getAccessFlags(), method.getAnnotations(), method.getHiddenApiRestrictions(), body);
     }
     static Method collectionDeserializer(ClassDef cls) {
         if (!cls.getType().startsWith("Lkotlinx/serialization/internal/")) return null;
@@ -141,6 +233,15 @@ public final class DexEngine {
                     if (cls.getType().startsWith("Ldev/sparklecat/xpatch/runtime/")) throw new IOException("Already patched APK. Select the original.");
                     if (cls.getType().equals(plan.application)) plan.applicationFound = true;
                     serializer(cls, plan);
+                    apolloMedia(cls, plan);
+                    premiumDisplay(cls, plan);
+                    for (Method method : cls.getMethods()) if (method.getImplementation() != null) {
+                        int sites = flagSites(method).size();
+                        if (sites > 0) {
+                            plan.flagHooks.put(key(method), sites);
+                            for (Instruction ins : method.getImplementation().getInstructions()) if (ins instanceof ReferenceInstruction && ((ReferenceInstruction) ins).getReference() instanceof StringReference && ((StringReference) ((ReferenceInstruction) ins).getReference()).getString().equals("subscriptions_feature_1008")) { plan.premiumSites += sites; break; }
+                        }
+                    }
                     Method collection = collectionDeserializer(cls);
                     if (collection != null) plan.collectionHooks.add(key(collection));
                     Set<String> strings = new HashSet<>();
@@ -205,6 +306,44 @@ public final class DexEngine {
         if (matches == 0) throw new IOException("Matched method has no supported return: " + key(method));
         return new ImmutableMethod(method.getDefiningClass(), method.getName(), method.getParameters(), method.getReturnType(), method.getAccessFlags(), method.getAnnotations(), method.getHiddenApiRestrictions(), body);
     }
+    // Reuse Piko's named feature switches, discover their consumers in this APK.
+    // Only low, distinct registers are supported: no clobbering live values or guessing offsets.
+    static Map<Integer, int[]> flagSites(Method method) {
+        Map<Integer, int[]> sites = new TreeMap<>();
+        Map<Integer, String> strings = new HashMap<>();
+        List<Instruction> code = new ArrayList<>(); method.getImplementation().getInstructions().forEach(code::add);
+        for (int i = 0; i + 1 < code.size(); i++) {
+            Instruction ins = code.get(i);
+            if (ins.getOpcode().setsRegister() && ins instanceof OneRegisterInstruction) strings.remove(((OneRegisterInstruction) ins).getRegisterA());
+            if (!(ins instanceof ReferenceInstruction)) continue;
+            Reference reference = ((ReferenceInstruction) ins).getReference();
+            if (reference instanceof StringReference && ins instanceof OneRegisterInstruction && FLAGS.contains(((StringReference) reference).getString())) strings.put(((OneRegisterInstruction) ins).getRegisterA(), ((StringReference) reference).getString());
+            if (!(reference instanceof MethodReference) || !((MethodReference) reference).getReturnType().equals("Z") || code.get(i + 1).getOpcode() != Opcode.MOVE_RESULT) continue;
+            List<Integer> regs = registers(ins);
+            List<? extends CharSequence> params = ((MethodReference) reference).getParameterTypes();
+            int offset = ins.getOpcode() == Opcode.INVOKE_STATIC || ins.getOpcode() == Opcode.INVOKE_STATIC_RANGE ? 0 : 1;
+            int word = offset;
+            for (CharSequence param : params) {
+                if (param.toString().equals("Ljava/lang/String;") && word < regs.size()) {
+                    int keyRegister = regs.get(word), result = ((OneRegisterInstruction) code.get(i + 1)).getRegisterA();
+                    if (keyRegister < 16 && result < 16 && keyRegister != result && strings.containsKey(keyRegister)) sites.put(i + 2, new int[]{result, keyRegister});
+                }
+                word += param.toString().equals("J") || param.toString().equals("D") ? 2 : 1;
+            }
+        }
+        return sites;
+    }
+    static Method flags(Method method) {
+        MutableMethodImplementation body = new MutableMethodImplementation(method.getImplementation());
+        List<Map.Entry<Integer, int[]>> sites = new ArrayList<>(flagSites(method).entrySet());
+        Collections.reverse(sites);
+        for (Map.Entry<Integer, int[]> site : sites) {
+            int[] regs = site.getValue(); int index = site.getKey();
+            body.addInstruction(index, new BuilderInstruction11x(Opcode.MOVE_RESULT, regs[0]));
+            body.addInstruction(index, new BuilderInstruction35c(Opcode.INVOKE_STATIC, 2, regs[0], regs[1], 0, 0, 0, FLAG));
+        }
+        return new ImmutableMethod(method.getDefiningClass(), method.getName(), method.getParameters(), method.getReturnType(), method.getAccessFlags(), method.getAnnotations(), method.getHiddenApiRestrictions(), body);
+    }
     static ClassDef rewrite(ClassDef cls, Plan plan) throws IOException {
         boolean application = cls.getType().equals(plan.application);
         boolean changed = application;
@@ -213,10 +352,13 @@ public final class DexEngine {
         for (Method method : cls.getMethods()) {
             boolean bootstrap = application && method.getName().equals("onCreate") && method.getParameterTypes().isEmpty() && method.getReturnType().equals("V");
             if (bootstrap) onCreate = true;
-            if (bootstrap || plan.hooks.contains(key(method)) || plan.collectionHooks.contains(key(method))) {
+            if (bootstrap || plan.hooks.contains(key(method)) || plan.collectionHooks.contains(key(method)) || plan.mediaHooks.contains(key(method))) {
                 if (method.getImplementation() == null || AccessFlags.STATIC.isSet(method.getAccessFlags())) throw new IOException("Unsupported hook method: " + key(method));
-                methods.add(hook(method, bootstrap)); changed = true;
-            } else methods.add(method);
+                Method patched = hook(method, bootstrap);
+                methods.add(plan.flagHooks.containsKey(key(method)) ? flags(patched) : patched); changed = true;
+            } else if (plan.flagHooks.containsKey(key(method))) { methods.add(flags(method)); changed = true; }
+            else if (method.getName().equals("<init>") && method.getImplementation() != null && plan.premiumFields.containsKey(cls.getType())) { methods.add(premiumConstructor(method, plan.premiumFields.get(cls.getType()))); changed = true; }
+            else methods.add(method);
         }
         if (application && !onCreate) {
             if (cls.getSuperclass() == null) throw new IOException("Missing application superclass.");
@@ -226,10 +368,53 @@ public final class DexEngine {
         }
         return changed ? new ImmutableClassDef(cls.getType(), cls.getAccessFlags(), cls.getSuperclass(), cls.getInterfaces(), cls.getSourceFile(), cls.getAnnotations(), cls.getFields(), methods) : cls;
     }
+    // Roll back the last class when an added hook exceeds a 16-bit DEX reference table.
+    static Map<String, File> writeDexes(Iterable<? extends ClassDef> classes, Opcodes opcodes, File work, String firstName, Set<String> names, int poolLimit) throws IOException {
+        if (poolLimit < 1 || poolLimit > 65536) throw new IOException("Invalid DEX pool limit.");
+        Map<String, File> files = new LinkedHashMap<>();
+        DexPool pool = new DexPool(opcodes);
+        String name = firstName;
+        int count = 0;
+        for (ClassDef cls : classes) {
+            pool.mark();
+            pool.internClass(cls);
+            if (pool.hasOverflowed(poolLimit)) {
+                pool.reset();
+                if (count == 0) throw new IOException("Class exceeds the DEX reference limit: " + cls.getType());
+                File file = new File(work, name);
+                writePool(pool, file);
+                files.put(name, file);
+                name = nextDexName(names);
+                names.add(name);
+                pool = new DexPool(opcodes);
+                pool.internClass(cls);
+                if (pool.hasOverflowed(poolLimit)) throw new IOException("Class exceeds the DEX reference limit: " + cls.getType());
+                count = 0;
+            }
+            count++;
+        }
+        File file = new File(work, name);
+        writePool(pool, file);
+        files.put(name, file);
+        return files;
+    }
+    static void writePool(DexPool pool, File file) throws IOException {
+        FileDataStore store = new FileDataStore(file);
+        try { pool.writeTo(store); } finally { store.close(); }
+    }
+    static String nextDexName(Set<String> names) throws IOException {
+        if (names.size() >= 100) throw new IOException("Too many output DEX files.");
+        int index = 2;
+        while (names.contains("classes" + index + ".dex")) index++;
+        return "classes" + index + ".dex";
+    }
     public static Map<String, File> apply(File apk, File work, Plan plan) throws IOException {
         Map<String, File> replacements = new LinkedHashMap<>();
         try (ZipFile zip = new ZipFile(apk)) {
-            for (ZipEntry entry : dexEntries(zip)) {
+            List<ZipEntry> entries = dexEntries(zip);
+            Set<String> names = new HashSet<>();
+            for (ZipEntry entry : entries) names.add(entry.getName());
+            for (ZipEntry entry : entries) {
                 DexBackedDexFile dex = read(zip, entry);
                 Set<ClassDef> classes = new LinkedHashSet<>();
                 boolean changed = false;
@@ -238,14 +423,8 @@ public final class DexEngine {
                     classes.add(patched); changed |= patched != cls;
                 }
                 if (changed) {
-                    File out = new File(work, entry.getName());
-                    // Keep unchanged classes backed by the original DEX. Eager immutable
-                    // copies of every instruction exceed phone heap limits on modern X.
-                    DexPool.writeTo(out.getPath(), new DexFile() {
-                        @Override public Set<? extends ClassDef> getClasses() { return classes; }
-                        @Override public Opcodes getOpcodes() { return dex.getOpcodes(); }
-                    });
-                    replacements.put(entry.getName(), out);
+                    // Keep unchanged classes backed by the original DEX to fit phone heaps.
+                    replacements.putAll(writeDexes(classes, dex.getOpcodes(), work, entry.getName(), names, 65536));
                 }
             }
         }

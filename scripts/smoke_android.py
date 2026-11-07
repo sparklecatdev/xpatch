@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -60,6 +61,15 @@ def texts():
     return [node.get("text") for node in tree().iter("node")]
 
 
+def has_control(description):
+    return any(node.get("content-desc") == description for node in tree().iter("node"))
+
+
+def restart():
+    shell("am", "force-stop", "com.twitter.android")
+    shell("am", "start", "-n", "com.twitter.android/.FixtureActivity")
+
+
 installed = shell("pm", "list", "packages", "com.twitter.android")
 if "package:com.twitter.android" in installed:
     details = shell("dumpsys", "package", "com.twitter.android")
@@ -71,6 +81,7 @@ shell("pm", "clear", "dev.sparklecat.xpatch")
 run("install", str(ROOT / "fixture/build/outputs/apk/debug/fixture-debug.apk"))
 shell("am", "start", "-n", "com.twitter.android/.FixtureActivity")
 wait_for(lambda: "Visible entries: 3" in texts())
+assert "Premium display: false" in texts()
 shell("am", "force-stop", "dev.sparklecat.xpatch")
 shell("am", "start", "-n", "dev.sparklecat.xpatch/.MainActivity")
 click("Use installed X")
@@ -88,7 +99,11 @@ patched = work / "patched-fixture.apk"
 patched.write_bytes(run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", "files/patched.apk"))
 report = run("exec-out", "run-as", "dev.sparklecat.xpatch", "cat", "files/report.txt").decode()
 assert "fixture-1" in report and "2 timeline parser(s)" in report, report
+assert "Premium UI: 1 site(s)" in report, report
 (work / "report.txt").write_text(report)
+with zipfile.ZipFile(patched) as apk:
+    assert apk.read("assets/xpatch/NOTICE") == (ROOT / "third_party/piko/NOTICE").read_bytes()
+    assert apk.read("assets/xpatch/Piko-LICENSE.txt") == (ROOT / "third_party/piko/Piko-LICENSE.txt").read_bytes()
 shell("pm", "uninstall", "com.twitter.android")
 run("install", str(patched))
 shell("am", "start", "-n", "com.twitter.android/.FixtureActivity")
@@ -96,6 +111,33 @@ wait_for(lambda: "Visible entries: 1" in texts())
 wait_for(lambda: "Modern entries: 1" in texts())
 visible = texts()
 assert "tweet-2" in visible and "promoted-tweet-1" not in visible and "rtb-3" not in visible, visible
+assert "Premium display: false" in visible
+click("Save X media")
+assert "Video · 4000 kbps · fixture-high.mp4" in texts()
+assert not any("fixture-low" in (text or "") for text in texts())
+click("Video · 4000 kbps · fixture-high.mp4")
+assert "https://video.twimg.com/fixture-high.mp4" in texts()
+click("Cancel")
+click("Save X media")
+click("Photo · original · fixture-photo")
+assert "https://pbs.twimg.com/media/fixture-photo?format=png&name=orig" in texts()
+click("Cancel")
+click("XPatch mods")
+click("Premium cosmetics: off", scroll=True)
+click("OK")
+restart()
+wait_for(lambda: "Premium display: true" in texts())
+click("XPatch mods")
+click("Media downloads: on", scroll=True)
+wait_for(lambda: not has_control("Save X media"))
+restart()
+wait_for(lambda: "Premium display: true" in texts())
+assert not has_control("Save X media")
+click("XPatch mods")
+click("Media downloads: off", scroll=True)
+wait_for(lambda: has_control("Save X media"))
+restart()
+wait_for(lambda: "Visible entries: 1" in texts())
 click("XPatch mods")
 click("Bottom navigation")
 click("Hide this bar")
@@ -109,10 +151,16 @@ click("XPatch mods")
 click("Promoted posts: hidden")
 wait_for(lambda: "Promoted posts: hidden" not in texts())
 time.sleep(.5)
-shell("am", "force-stop", "com.twitter.android")
-shell("am", "start", "-n", "com.twitter.android/.FixtureActivity")
+restart()
 wait_for(lambda: "Visible entries: 3" in texts())
 wait_for(lambda: "Modern entries: 4" in texts())
 assert "Home" not in texts(), "Live bar settings did not persist"
+assert "Premium display: true" in texts(), "Premium setting did not persist"
+click("Save X media")
+assert "Video · 4000 kbps · fixture-high.mp4" in texts(), "Media capture stopped with ads disabled"
+click("Clear list")
+click("Save X media")
+assert "Open a post containing" in " ".join(text for text in texts() if text)
+click("OK")
 (work / "fixture.png").write_bytes(run("exec-out", "screencap", "-p"))
-print("PASS: patch, device-key signature, installation, ad filtering, live bar hiding, inspector, persistent settings")
+print("PASS: patch, signature, install, ad filtering, Premium display state, original photo/highest MP4 selection, in-app toggles, bar hiding, inspector, persistent settings, license assets")
